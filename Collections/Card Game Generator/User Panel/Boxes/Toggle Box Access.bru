@@ -1,0 +1,23 @@
+meta {
+  name: Toggle Box Access
+  type: http
+  seq: 11
+}
+
+put {
+  url: {{baseUrl}}/boxes/689362a9749bc3eb9b034cbb/toggle-public
+  body: none
+  auth: bearer
+}
+
+headers {
+  Accept: application/json
+}
+
+auth:bearer {
+  token: {{userAccessToken}}
+}
+
+settings {
+  encodeUrl: true
+}

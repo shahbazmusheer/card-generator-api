@@ -1,66 +1,20 @@
-// src/models/Template.model.js
 const mongoose = require('mongoose');
 
 const TemplateSchema = new mongoose.Schema({
-    name: {
-        type: String,
-        required: [true, 'Template name is required.'],
-        unique: true,
-        trim: true
-    },
-    description: {
-        type: String,
-        trim: true,
-        default: ''
-    },
-    // This is the prompt string that the frontend will merge
-    themePrompt: {
-        type: String,
-        required: [true, 'A theme prompt is required for the template.']
-    },
-    // The image will be stored as a Base64 Data URI string
-    image: {
-        type: String,
-        required: [true, 'A preview image is required for the template.']
-    },
-    uses_count: {
-        type: Number,
-        default: 0
-    },
+    name: { type: String, required: true, unique: true, trim: true },
+    description: { type: String, trim: true, default: '' },
+    image: { type: String, required: true }, // The preview image for the template card
+    uses_count: { type: Number, default: 0 },
 
-    // --- NEW FIELDS FOR PAID TEMPLATES ---
-    paidType: {
-        type: String,
-        enum: ['free', 'premium'],
-        default: 'free'
-    },
-    // price: {
-    //     type: Number,
-    //     // Price is only required if the template is 'premium'
-    //     required: function() {
-    //         return this.paidType === 'premium';
-    //     },
-    //     // Price must be a positive number if it exists
-    //     min: [0, 'Price cannot be negative.']
-    // }
-    price: {
-        type: Number,
-        default: 0, // Default price is now 0
-        min: [0, 'Price cannot be negative.']
-    }
-    // --- END OF NEW FIELDS ---
+    // --- NEW: Fields to pre-fill the generation form ---
+    defaultBoxName: { type: String, default: 'My New Game' },
+    defaultPrompt: { type: String, required: true },
+    defaultGenre: { type: String, default: 'Fantasy' },
+    defaultColorTheme: { type: String, default: '#5D4037' },
+    defaultNumCards: { type: Number, default: 12 },
+    includesCharacterArt: { type: Boolean, default: false },
+    generatesBoxDesign: { type: Boolean, default: true },
 
 }, { timestamps: true });
-
-// --- NEW: Add a pre-save hook for data consistency ---
-// This middleware will run before any 'save' operation (like .create() or .save())
-TemplateSchema.pre('save', function(next) {
-    // If the template is 'free', ensure its price is 0.
-    // This handles cases where a user might accidentally send a price with a free template.
-    if (this.paidType === 'free') {
-        this.price = 0;
-    }
-    next();
-});
 
 module.exports = mongoose.models.Template || mongoose.model('Template', TemplateSchema);

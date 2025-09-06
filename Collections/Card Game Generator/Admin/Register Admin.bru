@@ -1,0 +1,28 @@
+meta {
+  name: Register Admin
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/auth/login
+  body: json
+  auth: inherit
+}
+
+headers {
+  Accept: application/json
+}
+
+body:json {
+  {
+      "username":"Card Game Admin",
+      "email":"admin@gmail.com",
+      "password":"12345678",
+      "role":"admin"
+  }
+}
+
+settings {
+  encodeUrl: true
+}

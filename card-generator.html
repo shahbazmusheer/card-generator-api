@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Card Crafter - Deck & Box Viewer</title>
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #2c3e50;
+            color: #ecf0f1;
+        }
+
+        /* Card rendering styles */
+        .card-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 2rem;
+        }
+
+        .card-container {
+            aspect-ratio: 2.5 / 3.5; /* Standard TCG card aspect ratio */
+            perspective: 1000px;
+            cursor: pointer;
+        }
+
+        .card-flipper {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            transition: transform 0.6s;
+            transform-style: preserve-3d;
+        }
+
+        .card-container:hover .card-flipper {
+            transform: rotateY(180deg);
+        }
+
+        .card-front, .card-back {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            -webkit-backface-visibility: hidden;
+            backface-visibility: hidden;
+            background-color: #34495e;
+            border-radius: 5%;
+            overflow: hidden;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.5);
+        }
+
+        .card-back {
+            transform: rotateY(180deg);
+        }
+
+        /* Box Dieline Styles */
+        .box-panel {
+            position: relative;
+            background-color: #34495e;
+            border: 2px dashed #7f8c8d;
+            overflow: hidden;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+        }
+        .box-panel-front { aspect-ratio: 1 / 1; }
+        .box-panel-side { aspect-ratio: 0.25 / 1; }
+        .box-panel-top { aspect-ratio: 1 / 0.25; }
+
+        /* Element positioning */
+        .card-element {
+            position: absolute;
+            box-sizing: border-box;
+            user-select: none;
+        }
+
+        .card-element img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .card-element.text-element {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 5px;
+            overflow-wrap: break-word;
+            word-wrap: break-word;
+        }
+
+        /* Modal styling for larger view */
+        .modal-card-container {
+            width: 100%;
+            max-width: 400px;
+            aspect-ratio: 2.5 / 3.5;
+            position: relative;
+            margin: auto;
+            border-radius: 5%;
+            overflow: hidden;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container my-5">
+    <div class="text-center mb-4">
+        <h1>AI Card Crafter Deck Viewer</h1>
+        <p class="lead">Enter a Box ID to fetch and display its complete card deck and box design.</p>
+    </div>
+
+    <div class="row justify-content-center">
+        <div class="col-lg-8">
+            <div class="card bg-dark text-white border-secondary shadow-lg">
+                <div class="card-body">
+                    <form id="deckForm">
+                        <div class="mb-3">
+                            <label for="baseUrl" class="form-label">API Base URL</label>
+                            <input type="text" class="form-control" id="baseUrl" value="http://52.55.56.66:5001/api">
+                        </div>
+                        <div class="mb-3">
+                            <label for="boxId" class="form-label">Box ID</label>
+                            <input type="text" class="form-control" id="boxId" placeholder="Enter the Box ID here..." required>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="bearerToken" class="form-label">Bearer Token (Optional)</label>
+                            <textarea class="form-control" id="bearerToken" rows="3" placeholder="Paste your JWT here to view private/owned decks..."></textarea>
+                        </div>
+
+                        <div class="d-grid">
+                            <button type="submit" class="btn btn-primary btn-lg" id="fetchDeckBtn">
+                                <span id="btn-text">Fetch Deck</span>
+                                <span id="btn-spinner" class="spinner-border spinner-border-sm" role="status" aria-hidden="true" style="display: none;"></span>
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <hr class="my-5">
+
+    <!-- Results Area -->
+    <div id="results" class="mt-5" style="display: none;">
+        <div id="boxDetails" class="mb-4 text-center"></div>
+        <h3 class="mb-3">Box Dieline / Packing Design</h3>
+        <div id="boxDieline" class="row g-3 mb-5 justify-content-center">
+            <div class="col-12 col-md-6 col-lg-4"><h5>Front</h5><div id="boxFront" class="box-panel box-panel-front"></div></div>
+            <div class="col-12 col-md-6 col-lg-4"><h5>Back</h5><div id="boxBack" class="box-panel box-panel-front"></div></div>
+            <div class="col-12 col-md-6 col-lg-4"><h5>Top</h5><div id="boxTop" class="box-panel box-panel-top"></div></div>
+            <div class="col-12 col-md-6 col-lg-4"><h5>Bottom</h5><div id="boxBottom" class="box-panel box-panel-top"></div></div>
+            <div class="col-6 col-md-3 col-lg-2"><h5>Left</h5><div id="boxLeft" class="box-panel box-panel-side"></div></div>
+            <div class="col-6 col-md-3 col-lg-2"><h5>Right</h5><div id="boxRight" class="box-panel box-panel-side"></div></div>
+        </div>
+        <h3 class="mb-3">Generated Cards</h3>
+        <div id="cardGrid" class="card-grid"></div>
+    </div>
+
+    <div id="errorDisplay" class="alert alert-danger mt-5" style="display: none;"></div>
+    <div id="loading" class="text-center mt-5" style="display: none;">
+        <div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div>
+        <p class="mt-2">Fetching deck data...</p>
+    </div>
+</div>
+
+<!-- Bootstrap Modal for Single Card View -->
+<div class="modal fade" id="cardDetailModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content bg-dark text-white">
+            <div class="modal-header border-secondary">
+                <h5 class="modal-title" id="cardModalLabel">Card Details</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="modalCardContainer" class="modal-card-container"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+
+<script>
+    $(document).ready(function() {
+        let fullDeckData = null;
+        const cardDetailModal = new bootstrap.Modal(document.getElementById('cardDetailModal'));
+
+        $('#deckForm').on('submit', function(e) {
+            e.preventDefault();
+            const baseUrl = $('#baseUrl').val().trim();
+            const boxId = $('#boxId').val().trim();
+            const token = $('#bearerToken').val().trim();
+            if (!baseUrl || !boxId) {
+                displayError("Base URL and Box ID are required.");
+                return;
+            }
+            fetchDeckData(baseUrl, boxId, token);
+        });
+
+        function fetchDeckData(baseUrl, boxId, token) {
+            const apiUrl = `${baseUrl}/boxes/${boxId}`;
+
+            const ajaxSettings = {
+                url: apiUrl,
+                method: 'GET',
+                headers: {}
+            };
+
+            if (token) {
+                ajaxSettings.headers['Authorization'] = `Bearer ${token}`;
+            }
+
+            $('#loading').show();
+            $('#results').hide();
+            $('#errorDisplay').hide();
+            $('#fetchDeckBtn').prop('disabled', true).find('#btn-spinner').show().siblings().hide();
+
+            $.ajax(ajaxSettings)
+                .done(response => {
+                    if (response.success && response.data) {
+                        fullDeckData = response.data;
+                        renderDeck(fullDeckData);
+                        $('#results').show();
+                    } else {
+                        displayError(response.message || "Received a successful but empty response.");
+                    }
+                })
+                .fail(jqXHR => {
+                    const errorMsg = jqXHR.responseJSON?.message || jqXHR.statusText || "An unknown error occurred.";
+                    displayError(`API Error (${jqXHR.status}): ${errorMsg}`);
+                })
+                .always(() => {
+                    $('#loading').hide();
+                    $('#fetchDeckBtn').prop('disabled', false).find('#btn-text').show().siblings().hide();
+                });
+        }
+
+        function renderDeck(data) {
+            const { box, cards } = data;
+            $('#boxDetails').html(`<h2>${box.name || 'Untitled Box'}</h2><p>${box.description || ''}</p>`);
+            renderBoxDieline(box);
+            const $cardGrid = $('#cardGrid').empty();
+            cards.forEach(card => {
+                $cardGrid.append(createCardHtml(card, data, false));
+            });
+        }
+
+        function renderBoxDieline(box) {
+            const design = box.boxDesign || {};
+            renderPanel('#boxFront', design.frontElements, box.boxWidthPx, box.boxHeightPx);
+            renderPanel('#boxBack', design.backElements, box.boxWidthPx, box.boxHeightPx);
+            renderPanel('#boxTop', design.topElements, box.boxWidthPx, 100);
+            renderPanel('#boxBottom', design.bottomElements, box.boxWidthPx, 100);
+            renderPanel('#boxLeft', design.leftElements, 100, box.boxHeightPx);
+            renderPanel('#boxRight', design.rightElements, 100, box.boxHeightPx);
+        }
+
+        function renderPanel(selector, elements, width, height) {
+            const $panel = $(selector).empty();
+            if (elements && elements.length > 0) {
+                const panelHtml = elements.map(el => renderElement(el, width, height)).join('');
+                $panel.html(panelHtml);
+            }
+        }
+
+        function createCardHtml(card, data, isModal = false) {
+            let frontElements, backElements;
+            if (card.isCustomDesign) {
+                frontElements = (card.elements || []).filter(el => el.isFrontElement);
+                backElements = (card.elements || []).filter(el => !el.isFrontElement);
+            } else {
+                const templateFront = data.cardTemplate?.frontElements || [];
+                const templateBack = data.cardTemplate?.backElements || [];
+                frontElements = [...templateFront, ...(card.elements || [])];
+                backElements = templateBack;
+            }
+
+            const frontHtml = frontElements.map(el => renderElement(el, card.widthPx, card.heightPx)).join('');
+            const backHtml = backElements.map(el => renderElement(el, card.widthPx, card.heightPx)).join('');
+
+            if (isModal) return `<div class="card-front">${frontHtml}</div>`;
+
+            return `<div class="col"><div class="card-container" data-card-id="${card._id}"><div class="card-flipper"><div class="card-front">${frontHtml}</div><div class="card-back">${backHtml}</div></div></div></div>`;
+        }
+
+        function renderElement(el, parentWidth, parentHeight) {
+            if (!el) return '';
+            const styles = `left: ${(el.x / parentWidth) * 100}%; top: ${(el.y / parentHeight) * 100}%; width: ${(el.width / parentWidth) * 100}%; height: ${(el.height / parentHeight) * 100}%; z-index: ${el.zIndex || 0}; transform: rotate(${el.rotation || 0}deg); opacity: ${el.opacity || 1};`;
+            switch (el.type) {
+                case 'image': return `<div class="card-element" style="${styles}"><img src="${el.imageUrl}" alt="Element"></div>`;
+                case 'text': return `<div class="card-element text-element" style="${styles} font-family: ${el.fontFamily}; font-size: ${el.fontSize}; color: ${el.color}; font-weight: ${el.fontWeight}; text-align: ${el.textAlign};">${el.content}</div>`;
+                case 'shape': return `<div class="card-element" style="${styles} background-color: ${el.fillColor}; border-radius: ${el.borderRadius || 0}px;"></div>`;
+                default: return '';
+            }
+        }
+
+        $('#cardGrid').on('click', '.card-container', function() {
+            const cardId = $(this).data('card-id');
+            const card = fullDeckData.cards.find(c => c._id === cardId);
+            if (card) {
+                $('#cardModalLabel').text(card.name || "Card Details");
+                $('#modalCardContainer').html(createCardHtml(card, fullDeckData, true));
+                cardDetailModal.show();
+            }
+        });
+
+        function displayError(message) {
+            $('#errorDisplay').text(message).show();
+        }
+    });
+</script>
+
+</body>
+</html>

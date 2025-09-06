@@ -1,0 +1,23 @@
+meta {
+  name: Get Single Card
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/cards/68ad9dd413c0321580489f78
+  body: none
+  auth: bearer
+}
+
+headers {
+  Accept: application/json
+}
+
+auth:bearer {
+  token: {{userAccessToken}}
+}
+
+settings {
+  encodeUrl: true
+}

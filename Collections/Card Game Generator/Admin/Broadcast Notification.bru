@@ -1,0 +1,32 @@
+meta {
+  name: Broadcast Notification
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/admin/notifications/broadcast
+  body: json
+  auth: bearer
+}
+
+headers {
+  Accept: application/json
+}
+
+auth:bearer {
+  token: {{adminAccessToken}}
+}
+
+body:json {
+  {
+   "title": "PLATFORM ANNOUNCEMENT",
+   "message": "We've Just Launched New Fantasy-Themed Templates! Check Them Out And Start Creating Your Next Game.",
+   "link": "/templates"
+  }
+  
+}
+
+settings {
+  encodeUrl: true
+}

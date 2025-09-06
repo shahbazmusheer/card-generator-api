@@ -10,6 +10,14 @@ const OrderItemSchema = new mongoose.Schema({
     boxType: { type: String, required: true },
 });
 
+const ShippingOptionSchema = new mongoose.Schema({
+    _id: false,
+    serviceName: { type: String, required: true },
+    price: { type: Number, required: true },
+    currency: { type: String, required: true },
+    estimatedDelivery: { type: String }
+});
+
 const ShippingDetailsSchema = new mongoose.Schema({
     _id: false,
     fullName: { type: String, required: true },
@@ -18,17 +26,19 @@ const ShippingDetailsSchema = new mongoose.Schema({
     address: { type: String, required: true },
     city: { type: String, required: true },
     country: { type: String, required: true },
-    countryCode: { type: String, required: true }, // <-- NEW REQUIRED FIELD
+    countryCode: { type: String, required: true },
     zipCode: { type: String, required: true }
 });
 
+// --- THIS IS THE FIX: Added the 'currency' field ---
 const CostSummarySchema = new mongoose.Schema({
     _id: false,
     cardsSubtotal: { type: Number, required: true },
     boxesSubtotal: { type: Number, required: true },
     shipping: { type: Number, required: true },
     tax: { type: Number, required: true },
-    total: { type: Number, required: true }
+    total: { type: Number, required: true },
+    currency: { type: String, required: true, default: 'USD' } // <-- NEW FIELD
 });
 
 const StatusHistorySchema = new mongoose.Schema({
@@ -44,11 +54,12 @@ const OrderSchema = new mongoose.Schema({
     shippingDetails: { type: ShippingDetailsSchema, required: true },
     costs: { type: CostSummarySchema, required: true },
     paymentMethod: { type: String, required: true },
-    transactionId: { type: String, required: true, unique: true },
+    transactionId: { type: String, unique: true, sparse: true },
+    selectedShippingOption: { type: ShippingOptionSchema, required: true },
     orderStatus: {
         type: String,
-        enum: ['Pending Approval', 'Rejected', 'Processing', 'Printing', 'Shipped', 'Delivered', 'Completed'],
-        default: 'Pending Approval'
+        enum: ['Pending Payment', 'Pending Approval', 'Rejected', 'Processing', 'Printing', 'Shipped', 'Delivered', 'Completed'],
+        default: 'Pending Payment'
     },
     statusHistory: [StatusHistorySchema],
     dhlTrackingNumber: { type: String, default: '' },

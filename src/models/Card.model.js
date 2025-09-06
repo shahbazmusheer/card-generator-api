@@ -1,31 +1,61 @@
-// src/models/Card.model.js
 const mongoose = require('mongoose');
-const ElementSchema = require('./Element.model.js'); // Import the ElementSchema
+
+// The CustomDesignSchema is no longer needed and has been removed.
 
 const CardSchema = new mongoose.Schema({
-    name: { type: String, default: 'Untitled Card' },
-    boxId: { type: mongoose.Schema.Types.ObjectId, ref: 'Box', required: true, index: true },
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: false },
-    isGuestCard: { // Flag to indicate if it's a guest-created box
+    name: {
+        type: String,
+        default: 'Untitled Card'
+    },
+    boxId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Box',
+        required: true,
+        index: true
+    },
+    userId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        required: false
+    },
+    isGuestCard: {
         type: Boolean,
         default: true
     },
-    orderInBox: { type: Number, default: 0 },
-    widthPx: { type: Number, required: true },
-    heightPx: { type: Number, required: true },
+    orderInBox: {
+        type: Number,
+        default: 0
+    },
+    widthPx: {
+        type: Number,
+        required: true
+    },
+    heightPx: {
+        type: Number,
+        required: true
+    },
 
-    // Store arrays of ObjectId references to Element documents
-    cardFrontElementIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Element' }],
-    cardBackElementIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Element' }],
-    // Metadata specific to this card's generation or state
+    // --- NEW, SIMPLIFIED STRUCTURE ---
+
+    // A flag to determine if this card uses the master template or its own design.
+    isCustomDesign: {
+        type: Boolean,
+        default: false
+    },
+
+    // A single array to hold this card's elements.
+    // - If isCustomDesign is FALSE, this holds only the unique elements (e.g., text).
+    // - If isCustomDesign is TRUE, this holds ALL elements for the card (background, frame, text, etc.).
+    elements: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Element'
+    }],
+
     metadata: {
-        // e.g., specific prompt used for this card if different from box,
-        // generation status for this specific card's AI content
         aiFrontImagePromptUsed: String,
         aiTextPromptUsed: String,
-        frontImageSource: String, // 'ai', 'uploaded', 'predefined_theme', 'placeholder'
-        // any other card-specific details
+        frontImageSource: String
     },
-}, { timestamps: true }); // Adds createdAt and updatedAt
+}, { timestamps: true });
 
 module.exports = mongoose.model('Card', CardSchema);

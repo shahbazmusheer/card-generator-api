@@ -1,0 +1,25 @@
+meta {
+  name: Update Card
+  type: http
+  seq: 3
+}
+
+put {
+  url: {{baseUrl}}/cards/68936bba9f4f1ff52d904399
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{userAccessToken}}
+}
+
+body:json {
+  {
+      "name": "Updated Card Name - Final Version"
+  }
+}
+
+settings {
+  encodeUrl: true
+}

@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>AI Powered Card Game</title>
+    <style>
+        body {
+            margin: 0;
+            background: linear-gradient(135deg, #363636, #633f72);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow-x: hidden;
+            color: white;
+            text-align: center;
+            padding: 20px;
+        }
+        h1 {
+            font-size: 2.5em;
+            text-shadow: 2px 2px 10px rgba(0,0,0,0.4);
+            margin-bottom: 40px;
+            animation: glow 2s ease-in-out infinite alternate;
+        }
+        @keyframes glow {
+            from { text-shadow: 0 0 10px white; }
+            to { text-shadow: 0 0 20px #fff, 0 0 30px #4facfe; }
+        }
+        .cards {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 20px;
+            max-width: 600px;
+        }
+        .card {
+            width: 120px;
+            height: 180px;
+            perspective: 1000px;
+        }
+        .card-inner {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            text-align: center;
+            transition: transform 0.8s;
+            transform-style: preserve-3d;
+        }
+        .card:hover .card-inner {
+            transform: rotateY(180deg);
+        }
+        .card-front, .card-back {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            backface-visibility: hidden;
+            border-radius: 10px;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.3);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-weight: bold;
+            font-size: 1.2em;
+            padding: 10px;
+            box-sizing: border-box;
+        }
+        .card-front {
+            background: white;
+            color: #333;
+        }
+        .card-back {
+            background: #363636;
+            color: white;
+            transform: rotateY(180deg);
+        }
+        .footer {
+            margin-top: 40px;
+            font-size: 0.9em;
+            color: rgba(255,255,255,0.8);
+        }
+        audio {
+            display: none;
+        }
+
+        /* Mobile Responsive */
+        @media (max-width: 480px) {
+            h1 {
+                font-size: 1.8em;
+                margin-bottom: 30px;
+            }
+            .card {
+                width: 90px;
+                height: 140px;
+            }
+            .card-front, .card-back {
+                font-size: 1em;
+            }
+        }
+    </style>
+</head>
+<body>
+<h1>AI Powered Card Game Running</h1>
+
+<div class="cards">
+    <div class="card">
+        <div class="card-inner">
+            <div class="card-front">2 + 3</div>
+            <div class="card-back">Answer: 5</div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-inner">
+            <div class="card-front">5 x 4</div>
+            <div class="card-back">Answer: 20</div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-inner">
+            <div class="card-front">10 - 6</div>
+            <div class="card-back">Answer: 4</div>
+        </div>
+    </div>
+</div>
+
+<div class="footer">Showcase only | Maths AI Cards</div>
+
+<!-- Background Music -->
+<audio id="bgmusic" loop muted autoplay>
+    <source src="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3" type="audio/mpeg">
+</audio>
+
+<script>
+    // Unmute on user interaction due to browser auto-play policy
+    document.body.addEventListener('click', () => {
+        const music = document.getElementById('bgmusic');
+        music.muted = false;
+        music.play();
+    });
+</script>
+</body>
+</html>

@@ -1,0 +1,30 @@
+meta {
+  name: Orders
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/admin/orders
+  body: json
+  auth: bearer
+}
+
+headers {
+  Accept: application/json
+}
+
+auth:bearer {
+  token: {{adminAccessToken}}
+}
+
+body:json {
+  {
+      "status": "Shipped"
+      // "dhlTrackingNumber": "JD014600002983204557"
+  }
+}
+
+settings {
+  encodeUrl: true
+}

@@ -1,0 +1,23 @@
+meta {
+  name: Upload Avatar
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/auth/profile/avatar
+  body: multipartForm
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{userAccessToken}}
+}
+
+body:multipart-form {
+  avatar: @file(/C:/Users/shahb/Downloads/user-profile-icon-illustration-vector.jpg)
+}
+
+settings {
+  encodeUrl: true
+}

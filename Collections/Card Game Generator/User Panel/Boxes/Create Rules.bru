@@ -1,0 +1,32 @@
+meta {
+  name: Create Rules
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/rules
+  body: json
+  auth: bearer
+}
+
+headers {
+  Accept: application/json
+}
+
+auth:bearer {
+  token: {{userAccessToken}}
+}
+
+body:json {
+  {
+      "name": "Mythic Legends Core Rules",
+      "difficulty_level": "moderate",
+      "game_roles": 2,
+      "prompt_for_rules": "A two-player trading card game where players summon Greek gods and heroes as creatures to attack each other. The goal is to reduce the opponent's life points from 20 to 0. Please include rules for drawing cards at the start of a turn, playing creature cards using 'Ambrosia' as a resource, and how to declare attacks and blocks."
+  }
+}
+
+settings {
+  encodeUrl: true
+}

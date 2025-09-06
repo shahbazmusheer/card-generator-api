@@ -1,0 +1,25 @@
+meta {
+  name: Generate AI Text For Card
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/cards/68936bba9f4f1ff52d904399/generate-text-field
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{userAccessToken}}
+}
+
+body:json {
+  {
+      "prompt": "Generate a fun, multiple-choice trivia question about the planet Mars."
+  }
+}
+
+settings {
+  encodeUrl: true
+}

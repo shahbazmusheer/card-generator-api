@@ -1,0 +1,19 @@
+meta {
+  name: Box Details
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/boxes/68adf2bfaa4811307532bdd2
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{userAccessToken}}
+}
+
+settings {
+  encodeUrl: true
+}

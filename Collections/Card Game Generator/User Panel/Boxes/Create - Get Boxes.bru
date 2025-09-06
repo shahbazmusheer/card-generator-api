@@ -1,0 +1,23 @@
+meta {
+  name: Create / Get Boxes
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/boxes
+  body: none
+  auth: bearer
+}
+
+headers {
+  Accept: application/json
+}
+
+auth:bearer {
+  token: {{userAccessToken}}
+}
+
+settings {
+  encodeUrl: true
+}

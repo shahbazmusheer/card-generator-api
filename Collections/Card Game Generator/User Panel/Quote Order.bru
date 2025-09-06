@@ -1,0 +1,37 @@
+meta {
+  name: Quote Order
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/orders/quote
+  body: json
+  auth: bearer
+}
+
+headers {
+  Accept: application/json
+}
+
+auth:bearer {
+  token: {{userAccessToken}}
+}
+
+body:json {
+  {
+    "cardStock": "Standard 300gsm Poker",
+    "deckQuantity": 20,
+    "cardsPerDeck": 30,
+    "shippingDetails": {
+      "address": "1 Infinite Loop",
+      "city": "Cupertino",
+      "zipCode": "95014",
+      "countryCode": "US"
+    }
+  }
+}
+
+settings {
+  encodeUrl: true
+}

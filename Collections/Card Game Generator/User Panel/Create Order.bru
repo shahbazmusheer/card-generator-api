@@ -1,0 +1,55 @@
+meta {
+  name: Create Order
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/orders
+  body: json
+  auth: bearer
+}
+
+headers {
+  Accept: application/json
+}
+
+auth:bearer {
+  token: {{userAccessToken}}
+}
+
+body:json {
+  {
+    "items": [
+      {
+        "boxId": "68adf2bfaa4811307532bdd2",
+        "deckQuantity": 20,
+        "cardsPerDeck": 30,
+        "materialFinish": "Gloss Finish",
+        "cardStock": "Standard 300gsm Poker",
+        "boxType": "Standard Tuck Box"
+      }
+    ],
+    "shippingDetails": {
+      "fullName": "Test Customer Webhook",
+      "email": "webhook.test@example.com",
+      "phone": "+15551234567",
+      "address": "123 Stripe Test Lane",
+      "city": "San Francisco",
+      "country": "United States",
+      "countryCode": "US",
+      "zipCode": "94103"
+    },
+    "selectedShippingOption": {
+      "serviceName": "EXPRESS WORLDWIDE",
+      "price": 35,
+      "currency": "USD",
+      "estimatedDelivery": "2025-07-28T23:59:59"
+    },
+    "paymentMethod": "Stripe"
+  }
+}
+
+settings {
+  encodeUrl: true
+}

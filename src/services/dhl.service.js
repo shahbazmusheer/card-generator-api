@@ -52,6 +52,64 @@ async function getShippingRates(shippingDetails, packageDetails) {
             const simplifiedRates = response.data.products.map(product => ({
                 serviceName: product.productName,
                 price: product.totalPrice[0]?.price,
+                // --- THIS IS THE FIX ---
+                // We add a fallback to 'USD' to ensure the currency key is always present,
+                // even if the sandbox API doesn't provide it.
+                currency: product.totalPrice[0]?.currency || 'USD',
+                estimatedDelivery: product.deliveryCapabilities?.estimatedDeliveryDateAndTime || null
+            }));
+
+            return simplifiedRates;
+        }
+        return [];
+    } catch (error) {
+        console.error("--- DHL Get Rates API Call Failed ---");
+        let errorMessage = "An unknown error occurred while fetching shipping rates.";
+        if (error.response && error.response.data) {
+            errorMessage = error.response.data.detail || error.response.data.message || errorMessage;
+        }
+        throw new Error(`DHL API Error: ${errorMessage}`);
+    }
+}
+
+async function getShippingRatesOld(shippingDetails, packageDetails) {
+    if (!DHL_API_KEY || !DHL_API_SECRET || !DHL_API_RATES_ENDPOINT || !DHL_ACCOUNT_NUMBER) {
+        console.error("DHL API credentials, Rates Endpoint, or Account Number are not fully configured.");
+        throw new Error("Shipping rate service is not properly configured.");
+    }
+
+    const credentials = Buffer.from(`${DHL_API_KEY}:${DHL_API_SECRET}`).toString('base64');
+    const authorizationHeader = `Basic ${credentials}`;
+    const headers = { 'Authorization': authorizationHeader };
+
+    const params = new URLSearchParams({
+        accountNumber: DHL_ACCOUNT_NUMBER,
+        originCountryCode: SHIPPER_COUNTRY_CODE,
+        originPostalCode: SHIPPER_POSTAL_CODE,
+        originCityName: SHIPPER_CITY_NAME,
+        destinationCountryCode: shippingDetails.countryCode,
+        destinationCityName: shippingDetails.city,
+        destinationPostalCode: shippingDetails.zipCode,
+        weight: packageDetails.weight || 5,
+        length: packageDetails.length || 15,
+        width: packageDetails.width || 10,
+        height: packageDetails.height || 5,
+        plannedShippingDate: new Date().toISOString().split('T')[0],
+        isCustomsDeclarable: shippingDetails.countryCode !== SHIPPER_COUNTRY_CODE,
+        unitOfMeasurement: 'metric',
+        requestEstimatedDeliveryDate: true,
+        estimatedDeliveryDateType: 'QDDF'
+    });
+
+    const finalUrl = `${DHL_API_RATES_ENDPOINT}?${params.toString()}`;
+
+    try {
+        const response = await axios.get(finalUrl, { headers });
+
+        if (response.data && response.data.products) {
+            const simplifiedRates = response.data.products.map(product => ({
+                serviceName: product.productName,
+                price: product.totalPrice[0]?.price,
                 currency: product.totalPrice[0]?.currency,
                 estimatedDelivery: product.deliveryCapabilities?.estimatedDeliveryDateAndTime || null
             }));

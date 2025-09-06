@@ -19,7 +19,10 @@ router.post('/', orderController.createOrder);
 router.get('/', orderController.getUserOrders);
 
 // Get the details of a single, specific order belonging to the user.
-// The custom orderId (e.g., #ORD-2025-001) should be URL-encoded by the frontend.
 router.get('/:orderId', orderController.getOrderById);
+
+
+// --- NEW ROUTE for submitting a post-order modification ---
+router.post('/:orderId/request-modification', orderController.createModificationRequest);
 
 module.exports = router;

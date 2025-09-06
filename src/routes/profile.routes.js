@@ -61,4 +61,7 @@ router.route('/')
 // from a form field named 'avatar'.
 router.post('/avatar', upload.single('avatar'), profileController.uploadAvatar);
 
+// --- NEW ROUTE for the user dashboard ---
+router.get('/dashboard', profileController.getUserDashboardStats);
+
 module.exports = router;

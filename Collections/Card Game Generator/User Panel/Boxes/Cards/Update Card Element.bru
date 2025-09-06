@@ -1,0 +1,29 @@
+meta {
+  name: Update Card Element
+  type: http
+  seq: 7
+}
+
+put {
+  url: {{baseUrl}}/cards/elements/68936bba9f4f1ff52d90439d
+  body: json
+  auth: bearer
+}
+
+headers {
+  Accept: application/json
+}
+
+auth:bearer {
+  token: {{userAccessToken}}
+}
+
+body:json {
+  {
+      "content": "This text has been updated!"
+  }
+}
+
+settings {
+  encodeUrl: true
+}

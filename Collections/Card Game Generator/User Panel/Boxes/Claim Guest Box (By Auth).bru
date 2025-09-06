@@ -1,0 +1,23 @@
+meta {
+  name: Claim Guest Box (By Auth)
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/boxes/68adf2bfaa4811307532bdd2/claim
+  body: none
+  auth: bearer
+}
+
+headers {
+  Accept: application/json
+}
+
+auth:bearer {
+  token: {{userAccessToken}}
+}
+
+settings {
+  encodeUrl: true
+}

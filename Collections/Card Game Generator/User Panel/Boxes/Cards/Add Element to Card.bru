@@ -1,0 +1,49 @@
+meta {
+  name: Add Element to Card
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/cards/68ad9dd413c0321580489f78/elements
+  body: json
+  auth: none
+}
+
+headers {
+  Accept: application/json
+}
+
+body:json {
+  {
+      "boxId": "68adf2bfaa4811307532bdd2",
+      "cardId": null,
+      "userId": null,
+      "isGuestElement": true,
+      "isFrontElement": true,
+      "type": "text",
+      "x": 0,
+      "y": 20,
+      "width": 315,
+      "height": 40,
+      "rotation": 0,
+      "zIndex": 4,
+      "opacity": 1,
+      "content": "Eternal Dragon",
+      "fontSize": "28px",
+      "fontFamily": "'MedievalSharp', cursive",
+      "color": "#000000",
+      "textAlign": "center",
+      "fontWeight": "bold",
+      "fillColor": "#cccccc",
+      "borderRadius": 0,
+      "elementId": "538334ec-d822-4225-bfe2-551a2128152b",
+      "__v": 0,
+      "createdAt": "2025-08-26T11:43:16.723Z",
+      "updatedAt": "2025-08-26T11:43:16.723Z"
+  }
+}
+
+settings {
+  encodeUrl: true
+}

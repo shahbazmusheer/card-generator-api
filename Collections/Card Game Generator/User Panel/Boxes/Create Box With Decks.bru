@@ -1,0 +1,36 @@
+meta {
+  name: Create Box With Decks
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/boxes/create-with-deck
+  body: json
+  auth: bearer
+}
+
+headers {
+  Accept: application/json
+}
+
+auth:bearer {
+  token: {{userAccessToken}}
+}
+
+body:json {
+  {
+      "boxName":"Nexus-7",
+      "userPrompt": "Create a fully designed high-resolution trading card image in portrait orientation featuring a neon-lit cyborg assassin with holographic implants set against a rain-soaked dystopian city with towering holograms; use a full-art digital trading card frame with a high-tech cyber interface design, outlined with thin angular circuit-like borders and corner connectors, including stylized HUD-style graphical elements; display the title 'NEXUS-7' in bold all-caps text centered near the bottom and subtitle 'ELITE BOUNTY HUNTER' below it in matching style, seamlessly integrated with the HUD elements and circuit patterns; make the character break through the frame with parts like its weapon, arm, or cloak extending outward for a 3D effect, ensuring premium quality with dynamic layering and crisp details.",
+      "boxDescription": "Create a fully designed high-resolution trading card image in portrait orientation featuring a neon-lit cyborg assassin with holographic implants set against a rain-soaked dystopian city with towering holograms; use a full-art digital trading card frame with a high-tech cyber interface design, outlined with thin angular circuit-like borders and corner connectors, including stylized HUD-style graphical elements; display the title 'NEXUS-7' in bold all-caps text centered near the bottom and subtitle 'ELITE BOUNTY HUNTER' below it in matching style, seamlessly integrated with the HUD elements and circuit patterns; make the character break through the frame with parts like its weapon, arm, or cloak extending outward for a 3D effect, ensuring premium quality with dynamic layering and crisp details.",
+      "genre": "Mythology",
+      "numCardsInDeck": 3,
+      "generateBoxDesign": true,
+      "cardColorTheme": "#E74C3C",
+      "ruleSetId": "68b041cf3accdf22a46e963a"
+  }
+}
+
+settings {
+  encodeUrl: true
+}

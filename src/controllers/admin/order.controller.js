@@ -1,7 +1,7 @@
 const Order = require('../../models/Order.model');
 const { successResponse, errorResponse } = require('../../utils/responseHandler');
 const dhlService = require('../../services/dhl.service'); // <-- Import the DHL service
-
+const { createNotification } = require('../../services/notification.service');
 /**
  * @desc    Get all orders with pagination, searching, and filtering for the admin panel.
  * @route   GET /api/admin/orders
@@ -85,6 +85,10 @@ exports.updateOrderStatus = async (req, res) => {
                 console.log(`Shipment created for ${orderId}. Tracking #: ${trackingNumber}`);
 
                 // You could trigger a "shipping confirmation" email to the user here.
+                const title = `Your Order Has Shipped!`;
+                const message = `Great news! Your order ${order.orderId} is on its way. Track your package here.`;
+                const link = `/orders/${order.orderId}`;
+                await createNotification(order.userId, title, message, 'order', link);
             } else {
                 console.log(`Order ${orderId} is already marked as shipped with tracking number.`);
             }
@@ -142,3 +146,4 @@ exports.generateOrderPdf = async (req, res) => {
         errorResponse(res, "Failed to generate PDF.", 500, "PDF_GENERATION_FAILED", error.message);
     }
 };
+

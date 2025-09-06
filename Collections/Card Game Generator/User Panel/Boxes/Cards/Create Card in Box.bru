@@ -1,0 +1,54 @@
+meta {
+  name: Create Card in Box
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/cards/box/68936bb79f4f1ff52d904397
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{userAccessToken}}
+}
+
+body:json {
+  {
+      "name": "New Trivia Card",
+      "widthPx": 315,
+      "heightPx": 440,
+      "orderInBox": 5,
+      "cardFrontElementsData": [
+          {
+              "type": "shape",
+              "shapeType": "rectangle",
+              "x": 20,
+              "y": 100,
+              "width": 275,
+              "height": 200,
+              "fillColor": "rgba(255, 255, 255, 0.9)",
+              "borderRadius": 15,
+              "zIndex": 1
+          },
+          {
+              "type": "text",
+              "content": "Which planet is known as the Red Planet?",
+              "x": 30,
+              "y": 110,
+              "width": 255,
+              "height": 180,
+              "fontSize": "24px",
+              "color": "#333333",
+              "textAlign": "center",
+              "zIndex": 2
+          }
+      ],
+      "cardBackElementsData": []
+  }
+}
+
+settings {
+  encodeUrl: true
+}

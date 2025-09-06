@@ -1,110 +1,72 @@
 // src/controllers/box.controller.js
 const Box = require('../models/Box.model');
-const Card = require('../models/Card.model'); // Needed for deleting cards with box
+const Card = require('../models/Card.model');
 const Element = require('../models/Element.model');
+const CardTemplate = require('../models/CardTemplate.model');
 const aiService = require('../services/ai.service');
 const mongoose = require('mongoose');
-const { v4: uuidv4 } = require('uuid');
-const jwt = require('jsonwebtoken'); // For optional token check
-const User = require('../models/User.model'); // For optional token check
+const jwt = require('jsonwebtoken');
+const User = require('../models/User.model');
 const RuleSet = require('../models/RuleSet.model');
-const SystemSetting = require('../models/SystemSetting.model.js');
-
 const { successResponse, errorResponse } = require('../utils/responseHandler');
-const { 
-    CONCISE_DUMMY_DATA_SYSTEM_INSTRUCTION, 
-    CARD_TITLE_SYSTEM_INSTRUCTION, 
-    ILLUSTRATION_IDEAS_SYSTEM_INSTRUCTION,
-    DECORATIVE_BACKGROUND_PROMPT_ADDITION,
-    DECORATIVE_ELEMENT_IDEAS_SYSTEM_INSTRUCTION
-  } = require('../constants/aiPrompts');
+const { CONCISE_DUMMY_DATA_SYSTEM_INSTRUCTION, CARD_TITLE_SYSTEM_INSTRUCTION } = require('../constants/aiPrompts');
+const getImageColors = require('get-image-colors');
 
-// --- NEW HELPER FUNCTION for Parsing AI Rules ---
-function parseRulesFromAiText(rawText) {
-    if (!rawText || typeof rawText !== 'string') {
-        return [];
-    }
-    const rules = [];
-    const lines = rawText.split('\n').map(line => line.trim()).filter(line => line.length > 0);
-    
-    for (let i = 0; i < lines.length; i++) {
-        // A heading is a line that is NOT wrapped in parentheses.
-        // The next line SHOULD be the description, wrapped in parentheses.
-        if (!lines[i].startsWith('(') && !lines[i].endsWith(')')) {
-            const heading = lines[i];
-            if (i + 1 < lines.length && lines[i + 1].startsWith('(') && lines[i + 1].endsWith(')')) {
-                // Remove parentheses and trim for the description
-                const description = lines[i + 1].slice(1, -1).trim();
-                rules.push({
-                    heading: heading,
-                    description: description,
-                    status: 'enabled' // Default status
-                });
-                i++; // Increment i to skip the description line in the next iteration
-            }
-        }
-    }
-    return rules;
-}
-
-
-const DEFAULT_BACKEND_PLACEHOLDER_IMAGE_URL ="";
-
-// Helper function to find the closest supported aspect ratio string
-function getClosestSupportedAspectRatioOld(width, height, supportedRatios) {
-    if (height === 0) return "1:1";
-    const targetRatio = width / height;
-    let closestRatioString = "1:1";
-    let smallestDifference = Infinity;
-    supportedRatios.forEach(ratioObj => {
-        const difference = Math.abs(targetRatio - ratioObj.value);
-        if (difference < smallestDifference) {
-            smallestDifference = difference;
-            closestRatioString = ratioObj.string;
-        }
-    });
-    console.log(`Target ratio for image: ${targetRatio.toFixed(2)}, Chosen supported Stability AI ratio string: ${closestRatioString}`);
-    return closestRatioString;
-}
-
+// --- HELPER FUNCTIONS ---
 function getClosestSupportedAspectRatio(width, height, supportedRatios) {
-    if (!width || !height || height === 0) return "1:1"; // Default for invalid inputs
-
+    if (!width || !height || height === 0) return "1:1";
     const targetRatioValue = width / height;
-    
-    // Use reduce to find the object with the smallest difference
     const closestRatio = supportedRatios.reduce((prev, curr) => {
         const prevDiff = Math.abs(prev.value - targetRatioValue);
         const currDiff = Math.abs(curr.value - targetRatioValue);
         return currDiff < prevDiff ? curr : prev;
     });
-    
-    console.log(`Target ratio: ${targetRatioValue.toFixed(2)}, Chosen supported Stability AI ratio string: ${closestRatio.string}`);
     return closestRatio.string;
 }
 
-// --- THE COMPLETE, MERGED, AND FINAL DECK GENERATION FUNCTION ---
-exports.generateNewDeckAndBox = async (req, res) => {
-    console.log("BOX_CONTROLLER: generateNewDeckAndBox (Resilient Mode) started.");
-    
-    // Array to collect warnings for non-critical failures
-    const generationWarnings = [];
+function getContrastingTextColor(hexColor) {
+    if (!hexColor || hexColor.length < 4) return '#000000';
+    let r = parseInt(hexColor.slice(1, 3), 16);
+    let g = parseInt(hexColor.slice(3, 5), 16);
+    let b = parseInt(hexColor.slice(5, 7), 16);
+    const hsp = Math.sqrt(0.299 * (r * r) + 0.587 * (g * g) + 0.114 * (b * b));
+    return hsp > 127.5 ? '#000000' : '#FFFFFF';
+}
 
+const normalizeBox = (box) => {
+    if (!box) return null;
+    return {
+        ...box,
+        ruleSetId: box.ruleSetId || null,
+        game_rules: box.game_rules || null,
+        boxDesign: box.boxDesign || { frontElements: [], backElements: [], topElements: [], bottomElements: [], leftElements: [], rightElements: [] }
+    };
+};
+
+// --- THIS IS THE SINGLE, CORRECT DECLARATION ---
+const populateBoxPaths = [
+    { path: 'boxDesign.frontElements' }, { path: 'boxDesign.backElements' },
+    { path: 'boxDesign.topElements' }, { path: 'boxDesign.bottomElements' },
+    { path: 'boxDesign.leftElements' }, { path: 'boxDesign.rightElements' }
+];
+
+// --- MAIN DECK GENERATION METHOD ---
+exports.generateNewDeckAndBox = async (req, res) => {
+    console.log("BOX_CONTROLLER: generateNewDeckAndBox (Advanced Box Design) started.");
+    const generationWarnings = [];
     try {
         const {
-            boxName,
-            boxDescription = "",
             userPrompt,
-            genre = "Educational",
-            ruleSetId,
-            accentColorHex = "#333333",
+            boxName,
+            boxDescription: userBoxDescription,
+            genre = "Fantasy",
+            numCardsInDeck = 1,
+            generateBoxDesign = true,
+            includeCharacterArt = false,
             defaultCardWidthPx = 315,
             defaultCardHeightPx = 440,
-            imageOutputFormatForDeck = "png",
-            numCardsInDeck = 1,
-            fallbackBackgroundUri = null,
-            fallbackCharacterUris = [],
-            fallbackDecorativeUris = []
+            ruleSetId,
+            cardColorTheme = '#5D4037'
         } = req.body;
 
         let userId = null;
@@ -114,428 +76,771 @@ exports.generateNewDeckAndBox = async (req, res) => {
             try {
                 const decoded = jwt.verify(token, process.env.JWT_SECRET);
                 const user = await User.findById(decoded.id);
-                if (user) {
-                    userId = user._id;
-                    isGuest = false;
-                }
-            } catch (err) {
-                console.log('Optional token check failed, proceeding as guest:', err.message);
-            }
+                if (user) { userId = user._id; isGuest = false; }
+            } catch (err) { /* proceed as guest */ }
+        }
+        if (!userPrompt) return errorResponse(res, "An AI Prompt is required.", 400);
+
+        // --- PHASE 1: RULESET, FONT, & TEXT GENERATION ---
+        let game_rules = null;
+        let rulesContextString = "No specific rules provided.";
+        if (ruleSetId) {
+            if (!mongoose.Types.ObjectId.isValid(ruleSetId)) return errorResponse(res, "Invalid RuleSet ID format.", 400);
+            const ruleSet = await RuleSet.findById(ruleSetId);
+            if (!ruleSet) return errorResponse(res, "RuleSet with the provided ID not found.", 404);
+            if (!isGuest && ruleSet.userId && ruleSet.userId.toString() !== userId.toString()) return errorResponse(res, "You are not authorized to use this RuleSet.", 403);
+            game_rules = { rules_data: ruleSet.rules_data.map(r => ({ ...r })) };
+            rulesContextString = game_rules.rules_data.map(rule => `- ${rule.heading}: ${rule.description}`).join('\n');
         }
 
-        if (!userPrompt) {
-            return errorResponse(res, "A user prompt is required.", 400);
+        let selectedFontFamily;
+        switch (genre.toLowerCase()) {
+            case 'fantasy': case 'mythology': selectedFontFamily = "'MedievalSharp', cursive"; break;
+            case 'sci-fi': case 'cyberpunk': selectedFontFamily = "'Orbitron', sans-serif"; break;
+            case 'horror': selectedFontFamily = "'Creepster', cursive"; break;
+            case 'educational': selectedFontFamily = "'Comic Sans MS', cursive"; break;
+            default: selectedFontFamily = "'Roboto', sans-serif";
         }
 
-        // --- PHASE 1: Text-Based AI Brainstorming (These are critical and will throw errors) ---
-        let finalBoxName = boxName;
-        const brainstormingPromises = [];
-        const textListPromptForGemini = `Game Context:\nThe game is about: "${userPrompt}".\n\nUser Request:\nBased on the game context above, generate a list of ${numCardsInDeck} unique, concise problem-solving questions for game cards.`;
-        brainstormingPromises.push(aiService.generateTextWithGemini(textListPromptForGemini, undefined, CONCISE_DUMMY_DATA_SYSTEM_INSTRUCTION));
-        
-        if (!finalBoxName) {
-            brainstormingPromises.push(aiService.generateTextWithGemini(userPrompt, undefined, CARD_TITLE_SYSTEM_INSTRUCTION));
-        } else {
-            brainstormingPromises.push(Promise.resolve(null));
-        }
-        brainstormingPromises.push(aiService.generateTextWithGemini(userPrompt, undefined, DECORATIVE_ELEMENT_IDEAS_SYSTEM_INSTRUCTION));
+        const [textData, visualData] = await Promise.all([
+            (async () => {
+                const [textList, name, desc] = await Promise.all([
+                    aiService.generateTextWithGemini(`Game Context:\n${rulesContextString}\n\nBased on "${userPrompt}", generate ${numCardsInDeck} unique text contents for cards.`, undefined, CONCISE_DUMMY_DATA_SYSTEM_INSTRUCTION),
+                    boxName ? Promise.resolve(boxName) : aiService.generateTextWithGemini(userPrompt, undefined, CARD_TITLE_SYSTEM_INSTRUCTION),
+                    userBoxDescription ? Promise.resolve(userBoxDescription) : aiService.generateTextWithGemini(userPrompt, undefined, aiService.BOX_DESCRIPTION_SYSTEM_INSTRUCTION)
+                ]);
+                let textItems = (textList || '').split('\n').map(item => item.trim()).filter(Boolean);
+                while (textItems.length < numCardsInDeck) { textItems.push(`[Content ${textItems.length + 1}]`); }
+                return { textItemsArray: textItems, finalBoxName: boxName || name.trim(), finalBoxDescription: userBoxDescription || desc.trim() };
+            })(),
+            (async () => {
+                const basePrompt = `${userPrompt}, ${genre}, digital art.`;
+                const [bgRes, backRes, charRes, boxFrontRes, boxBackRes, patternRes] = await Promise.all([
+                    aiService.generateImageWithStabilityAI(`Scenic background, no characters, ${basePrompt}`, 'png', '2:3'),
+                    aiService.generateImageWithStabilityAI(`Card back design. ${aiService.CARD_BACK_DESIGN_PROMPT_ADDITION}`, 'png', '2:3'),
+                    includeCharacterArt ? aiService.generateImageWithStabilityAI(`Isolated character, on a solid white background, ${basePrompt}`, 'png', '1:1') : Promise.resolve({ success: false }),
+                    generateBoxDesign ? aiService.generateImageWithStabilityAI(`Front of product box, title "${boxName}", ${basePrompt}`, 'png', '1:1') : Promise.resolve({ success: false }),
+                    generateBoxDesign ? aiService.generateImageWithStabilityAI(`Back of product box, retail packaging, ${basePrompt}`, 'png', '1:1') : Promise.resolve({ success: false }),
+                    generateBoxDesign ? aiService.generateImageWithStabilityAI(`Seamless, intricate background pattern, thematically consistent with: ${basePrompt}`, 'png', '1:1') : Promise.resolve({ success: false })
+                ]);
+                return { bgResult: bgRes, backResult: backRes, mainIllustrationResult: charRes, boxFrontResult: boxFrontRes, boxBackResult: boxBackRes, patternResult: patternRes };
+            })()
+        ]);
 
-        const [ textListData, generatedTitle, decorativeIdeasText ] = await Promise.all(brainstormingPromises);
-        
-        if (!finalBoxName && generatedTitle) {
-            finalBoxName = generatedTitle.trim();
-        } else if (!finalBoxName) {
-            finalBoxName = "My Fun Game";
-        }
+        const { textItemsArray, finalBoxName, finalBoxDescription } = textData;
+        const { bgResult, backResult, mainIllustrationResult, boxFrontResult, boxBackResult, patternResult } = visualData;
 
-        let textItemsArray = (textListData || '').split('\n').map(item => item.trim()).filter(Boolean);
-        while (textItemsArray.length < numCardsInDeck) { textItemsArray.push(`[Problem ${textItemsArray.length + 1}]`); }
-        
-        const decorativeIdeas = decorativeIdeasText ? decorativeIdeasText.split(',').map(s => s.trim()).filter(Boolean) : [];
-        const supportedRatios = [{ string: "2:3", value: 2/3 }, { string: "3:2", value: 3/2 }, { string: "1:1", value: 1/1 }];
-        const finalAspectRatioForAI = getClosestSupportedAspectRatio(defaultCardWidthPx, defaultCardHeightPx, supportedRatios);
-
-        // --- PHASE 2: Image Generation (These are non-critical and will add warnings) ---
-        let sharedBackgroundUri = fallbackBackgroundUri;
-        let initialDecorativeUris = fallbackDecorativeUris;
-        const canUseStabilityAI = !!process.env.STABILITY_API_KEY;
-        const canUseBgRemoval = !!process.env.PIXIAN_API_KEY;
-
-        if (canUseStabilityAI) {
-            if (!sharedBackgroundUri) {
-                const backgroundPrompt = `A simple, clean, vibrant, colorful gradient background for a children's flashcard about "${userPrompt}".`;
-                const backgroundResult = await aiService.generateImageWithStabilityAI(backgroundPrompt, imageOutputFormatForDeck, finalAspectRatioForAI);
-                if (backgroundResult.success) {
-                    sharedBackgroundUri = backgroundResult.data;
-                } else {
-                    generationWarnings.push(backgroundResult.error);
-                }
-            }
-
-            if (initialDecorativeUris.length === 0 && decorativeIdeas.length > 0) {
-                const decorativePromises = decorativeIdeas.map(idea => aiService.generateImageWithStabilityAI(`A single, cute, small cartoon ${idea}, sticker style.`, 'png', '1:1'));
-                const decorativeResults = await Promise.all(decorativePromises);
-                decorativeResults.forEach(result => {
-                    if (result.success) {
-                        initialDecorativeUris.push(result.data);
-                    } else {
-                        generationWarnings.push(result.error);
-                    }
-                });
-            }
-        }
-        
-        let refinedDecorativeUris = [];
-        if (canUseBgRemoval && initialDecorativeUris.length > 0) {
-            const bgRemovalPromises = initialDecorativeUris.map(uri => aiService.removeBackgroundWithPixian(Buffer.from(uri.split(',')[1], 'base64')));
-            refinedDecorativeUris = (await Promise.all(bgRemovalPromises)).filter(Boolean);
-            if (refinedDecorativeUris.length === 0) {
-                refinedDecorativeUris = initialDecorativeUris;
-            }
-        } else {
-            refinedDecorativeUris = initialDecorativeUris;
-        }
-
-        // --- PHASE 3: Database Assembly ---
-        const newBoxData = {
-            name: finalBoxName, description: boxDescription, userId, isGuestBox: isGuest,
-            defaultCardWidthPx, defaultCardHeightPx,
-            baseAISettings: { userPrompt, genre, accentColorHex, imageAspectRatio: finalAspectRatioForAI, imageOutputFormat: imageOutputFormatForDeck }
-        };
+        const boxWidthPx = Math.round(defaultCardWidthPx * 1.05);
+        const boxHeightPx = Math.round(defaultCardHeightPx * 1.05);
+        const newBoxData = { name: finalBoxName, description: finalBoxDescription, userId, isGuestBox: isGuest, defaultCardWidthPx, defaultCardHeightPx, boxWidthPx, boxHeightPx, ruleSetId: ruleSetId || null, game_rules };
         const savedBox = await new Box(newBoxData).save();
-        console.log("BOX_CONTROLLER: Box saved, ID:", savedBox._id);
+        const savedTemplate = await new CardTemplate({ boxId: savedBox._id }).save();
+        savedBox.cardTemplateId = savedTemplate._id;
 
-        const generatedCardsDataForResponse = [];
+        const masterFrontElements = [];
+        if (bgResult.success) masterFrontElements.push({ type: 'image', imageUrl: bgResult.data, zIndex: 0, x: 0, y: 0, width: defaultCardWidthPx, height: defaultCardHeightPx });
+        if (mainIllustrationResult.success) {
+            const refinedUri = await aiService.removeBackgroundWithPixian(Buffer.from(mainIllustrationResult.data.split(',')[1], 'base64'));
+            const charSize = 280; masterFrontElements.push({ type: 'image', imageUrl: refinedUri || mainIllustrationResult.data, zIndex: 2, x: (defaultCardWidthPx - charSize) / 2, y: (defaultCardHeightPx - charSize) / 2, width: charSize, height: charSize });
+        }
+        const frontTemplateElements = await Element.insertMany(masterFrontElements.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId, isFrontElement: true })));
+        savedTemplate.frontElements = frontTemplateElements.map(e => e._id);
+        const backTemplateElements = [];
+        if (backResult.success) {
+            const backEl = await new Element({ type: 'image', imageUrl: backResult.data, zIndex: 0, x: 0, y: 0, width: defaultCardWidthPx, height: defaultCardHeightPx, isFrontElement: false, boxId: savedBox._id, isGuestElement: isGuest, userId }).save();
+            backTemplateElements.push(backEl);
+        }
+        savedTemplate.backElements = backTemplateElements.map(e => e._id);
+        await savedTemplate.save();
+
         for (let i = 0; i < numCardsInDeck; i++) {
-            const individualCardText = textItemsArray[i];
-            let initialCharUris = i < fallbackCharacterUris.length ? [fallbackCharacterUris[i]] : [];
-            
-            if (canUseStabilityAI && initialCharUris.length === 0) {
-                const charIdeasText = await aiService.generateTextWithGemini(`Text: "${individualCardText}"`, undefined, ILLUSTRATION_IDEAS_SYSTEM_INSTRUCTION);
-                const charIdeas = charIdeasText ? charIdeasText.split(',').map(s => s.trim()).filter(Boolean) : [];
-                if (charIdeas.length > 0) {
-                    const initialCharPromises = charIdeas.slice(0, 2).map(idea => aiService.generateImageWithStabilityAI(`Cute cartoon illustration of ${idea}, for a children's game.`, 'png', '1:1'));
-                    const initialCharResults = await Promise.all(initialCharPromises);
-                    initialCharResults.forEach(result => {
-                        if (result.success) {
-                            initialCharUris.push(result.data);
-                        } else {
-                            generationWarnings.push(result.error);
-                        }
-                    });
-                }
-            }
-
-            let refinedCharacterUris = [];
-            if(canUseBgRemoval && initialCharUris.length > 0){
-                const charBgRemovalPromises = initialCharUris.map(uri => aiService.removeBackgroundWithPixian(Buffer.from(uri.split(',')[1], 'base64')));
-                refinedCharacterUris = (await Promise.all(charBgRemovalPromises)).filter(Boolean);
-                if (refinedCharacterUris.length === 0) {
-                    refinedCharacterUris = initialCharUris;
-                }
-            } else {
-                refinedCharacterUris = initialCharUris;
-            }
-            
-            const tempCardId = new mongoose.Types.ObjectId();
-            const cardFrontElementDocsData = [];
-            
-            if (sharedBackgroundUri) { cardFrontElementDocsData.push({ type: 'image', imageUrl: sharedBackgroundUri, zIndex: 0, x: 0, y: 0, width: defaultCardWidthPx, height: defaultCardHeightPx }); }
-            
-            refinedDecorativeUris.forEach(uri => {
-                for (let j = 0; j < 4; j++) {
-                    const decorativeSize = Math.random() * 15 + 15;
-                    cardFrontElementDocsData.push({ type: 'image', imageUrl: uri, zIndex: 1, x: Math.random() * (defaultCardWidthPx - decorativeSize), y: Math.random() * (defaultCardHeightPx - decorativeSize), width: decorativeSize, height: decorativeSize, rotation: Math.random() * 360 });
-                }
-            });
-
-            const charSize = defaultCardWidthPx * 0.4;
-            if (refinedCharacterUris[0]) cardFrontElementDocsData.push({ type: 'image', imageUrl: refinedCharacterUris[0], zIndex: 2, x: 20, y: defaultCardHeightPx - charSize - 20, width: charSize, height: charSize });
-            if (refinedCharacterUris[1]) cardFrontElementDocsData.push({ type: 'image', imageUrl: refinedCharacterUris[1], zIndex: 2, x: defaultCardWidthPx - charSize - 20, y: defaultCardHeightPx - charSize - 20, width: charSize, height: charSize });
-
-            const questionBoxHeight = 100;
-            cardFrontElementDocsData.push({ type: 'shape', shapeType: 'rectangle', zIndex: 3, x: 40, y: 150, width: defaultCardWidthPx - 80, height: questionBoxHeight, fillColor: 'rgba(255, 255, 255, 0.9)', borderRadius: 20 });
-            cardFrontElementDocsData.push({ type: 'text', content: finalBoxName, zIndex: 4, x: 0, y: 40, width: defaultCardWidthPx, height: 60, color: '#5C3A92', textAlign: 'center', fontSize: "35px", fontFamily: "Arial Rounded MT Bold, sans-serif", fontWeight: 'bold' });
-            cardFrontElementDocsData.push({ type: 'text', content: individualCardText, zIndex: 4, x: 50, y: 155, width: defaultCardWidthPx - 100, height: questionBoxHeight - 10, color: '#333333', textAlign: 'center', fontSize: "20px", fontFamily: "Arial, sans-serif" });
-
-            const elementsToCreate = cardFrontElementDocsData.map(el => ({ ...el, cardId: tempCardId, boxId: savedBox._id, isGuestElement: isGuest, userId: userId, isFrontElement: true }));
-            const savedFrontElements = await Element.insertMany(elementsToCreate);
-
-            const cardToSave = new Card({ _id: tempCardId, name: `${finalBoxName} - Card ${i + 1}`, boxId: savedBox._id, userId: userId, isGuestCard: isGuest, orderInBox: i, widthPx: defaultCardWidthPx, heightPx: defaultCardHeightPx, cardFrontElementIds: savedFrontElements.map(el => el._id), cardBackElementIds: [] });
-            const savedCard = await cardToSave.save();
-            const cardForResponse = savedCard.toObject();
-            cardForResponse.cardFrontElements = savedFrontElements.map(el => el.toObject());
-            generatedCardsDataForResponse.push(cardForResponse);
+            const textBg = await new Element({ type: 'shape', zIndex: 3, x: 40, y: 275, width: 235, height: 120, fillColor: 'rgba(0,0,0,0.5)', borderRadius: 15, boxId: savedBox._id, isGuestElement: isGuest, userId }).save();
+            const textEl = await new Element({ type: 'text', content: textItemsArray[i], zIndex: 5, x: 50, y: 280, width: 215, height: 120, color: '#FFFFFF', boxId: savedBox._id, isGuestElement: isGuest, userId }).save();
+            await new Card({ name: `${finalBoxName} - Card ${i + 1}`, boxId: savedBox._id, userId, isGuestCard: isGuest, orderInBox: i, widthPx: defaultCardWidthPx, heightPx: defaultCardHeightPx, elements: [textBg._id, textEl._id] }).save();
         }
 
-        // --- PHASE 4: Construct and Send Final Response ---
-        const boxResponseObject = savedBox.toObject();
-        boxResponseObject.cards = generatedCardsDataForResponse;
-        
-        // Add the warnings to the response metadata if any exist, removing duplicates.
-        const metadata = generationWarnings.length > 0 ? { warnings: [...new Set(generationWarnings)] } : null;
+        if (generateBoxDesign) {
+            const boxFront = [], boxBack = [], boxTop = [], boxBottom = [], boxLeft = [], boxRight = [];
+            if (boxFrontResult.success) boxFront.push({ type: 'image', imageUrl: boxFrontResult.data, zIndex: 0, x: 0, y: 0, width: boxWidthPx, height: boxHeightPx });
+            if (boxBackResult.success) boxBack.push({ type: 'image', imageUrl: boxBackResult.data, zIndex: 0, x: 0, y: 0, width: boxWidthPx, height: boxHeightPx });
 
-        const successMessage = `Box '${savedBox.name}' and ${generatedCardsDataForResponse.length} cards created.`;
-        
-        successResponse(res, successMessage, { box: boxResponseObject }, 201, metadata);
+            if (patternResult.success) {
+                const panelDepth = Math.round(boxWidthPx * 0.3);
+                const lrPanelElement = { type: 'image', imageUrl: patternResult.data, zIndex: 0, x: 0, y: 0, width: panelDepth, height: boxHeightPx };
+                boxLeft.push(lrPanelElement); boxRight.push(lrPanelElement);
+                const tbPanelElement = { type: 'image', imageUrl: patternResult.data, zIndex: 0, x: 0, y: 0, width: boxWidthPx, height: panelDepth };
+                boxTop.push(tbPanelElement); boxBottom.push(tbPanelElement);
+            }
 
+            const [fe, be, te, boe, le, re] = await Promise.all([
+                Element.insertMany(boxFront.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId }))),
+                Element.insertMany(boxBack.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId, isFrontElement: false }))),
+                Element.insertMany(boxTop.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId }))),
+                Element.insertMany(boxBottom.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId }))),
+                Element.insertMany(boxLeft.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId }))),
+                Element.insertMany(boxRight.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId })))
+            ]);
+
+            savedBox.boxDesign = {
+                frontElements: fe.map(e => e._id), backElements: be.map(e => e._id),
+                topElements: te.map(e => e._id), bottomElements: boe.map(e => e._id),
+                leftElements: le.map(e => e._id), rightElements: re.map(e => e._id)
+            };
+            await savedBox.save();
+        }
+
+        const finalBox = await Box.findById(savedBox._id).populate(populateBoxPaths).lean();
+        const finalCardTemplate = await CardTemplate.findById(savedTemplate._id).populate('frontElements backElements').lean();
+        const finalCards = await Card.find({ boxId: savedBox._id }).populate('elements').lean();
+
+        successResponse(res, `Box "${finalBoxName}" created.`, { box: normalizeBox(finalBox), cardTemplate: finalCardTemplate, cards: finalCards }, 201);
     } catch (error) {
         console.error("Error in generateNewDeckAndBox Controller:", error);
         errorResponse(res, "Error generating new deck and box.", 500, "DECK_GENERATION_FAILED", error.message);
     }
-    console.log("CONTROLLER: generateNewDeckAndBox finished.");
 };
 
-// --- THE COMPLETE, FINAL, ROBUST-FALLBACK DECK GENERATION FUNCTION ---
-exports.generateNewDeckAndBoxOld = async (req, res) => {
-    console.log("BOX_CONTROLLER: generateNewDeckAndBox (Robust Fallback Strategy) started.");
+// --- MAIN DECK GENERATION METHOD ---
+exports.generateNewDeckAndBoxx = async (req, res) => {
+    console.log("BOX_CONTROLLER: generateNewDeckAndBox (Advanced Box Design) started.");
+    const generationWarnings = [];
     try {
-        const {
-            boxName, boxDescription = "", userPrompt, genre = "Educational",
-            accentColorHex = "#333333", defaultCardWidthPx = 315,
-            defaultCardHeightPx = 440, imageAspectRatioForDeck = null,
-            imageOutputFormatForDeck = "png", numCardsInDeck = 1,
-            fallbackBackgroundUri = null,
-            fallbackCharacterUris = [],
-            fallbackDecorativeUris = []
-        } = req.body;
-
-
-        let userId = null;
-        let isGuest = true;
-        let token;
-        // THIS IS A MANUAL AUTHENTICATION CHECK
+        const { userPrompt, boxName, numCardsInDeck = 1, generateBoxDesign = true, includeCharacterArt = false, defaultCardWidthPx = 315, defaultCardHeightPx = 440, ...otherParams } = req.body;
+        let userId = null; let isGuest = true;
         if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-            token = req.headers.authorization.split(' ')[1];
+            const token = req.headers.authorization.split(' ')[1];
             try {
                 const decoded = jwt.verify(token, process.env.JWT_SECRET);
                 const user = await User.findById(decoded.id);
-                if (user) {
-                    userId = user._id;
-                    isGuest = false; // <-- This line SHOULD run for an auth'd user
-                }
-            } catch (err) {
-                // If an error happens (e.g., expired token), it proceeds as a guest
-                console.log('Optional token check failed, proceeding as guest:', err.message);
-            }
+                if (user) { userId = user._id; isGuest = false; }
+            } catch (err) { /* proceed as guest */ }
+        }
+        if (!userPrompt) return errorResponse(res, "An AI Prompt is required.", 400);
+
+        const [textData, visualData] = await Promise.all([
+            (async () => {
+                const [textList, name, desc] = await Promise.all([
+                    aiService.generateTextWithGemini(`Based on "${userPrompt}", generate ${numCardsInDeck} unique text contents for cards.`, undefined, CONCISE_DUMMY_DATA_SYSTEM_INSTRUCTION),
+                    boxName ? Promise.resolve(boxName) : aiService.generateTextWithGemini(userPrompt, undefined, CARD_TITLE_SYSTEM_INSTRUCTION),
+                    otherParams.boxDescription ? Promise.resolve(otherParams.boxDescription) : aiService.generateTextWithGemini(userPrompt, undefined, aiService.BOX_DESCRIPTION_SYSTEM_INSTRUCTION)
+                ]);
+                let textItems = (textList || '').split('\n').map(item => item.trim()).filter(Boolean);
+                while (textItems.length < numCardsInDeck) { textItems.push(`[Content ${textItems.length + 1}]`); }
+                return { textItemsArray: textItems, finalBoxName: boxName || name.trim(), finalBoxDescription: otherParams.boxDescription || desc.trim() };
+            })(),
+            (async () => {
+                const basePrompt = `${userPrompt}, ${otherParams.genre || 'Fantasy'}, digital art.`;
+                const [bgRes, backRes, charRes, boxFrontRes, boxBackRes, patternRes] = await Promise.all([
+                    aiService.generateImageWithStabilityAI(`Scenic background, no characters, ${basePrompt}`, 'png', '2:3'),
+                    aiService.generateImageWithStabilityAI(`Card back design. ${aiService.CARD_BACK_DESIGN_PROMPT_ADDITION}`, 'png', '2:3'),
+                    includeCharacterArt ? aiService.generateImageWithStabilityAI(`Isolated character, on a solid white background, ${basePrompt}`, 'png', '1:1') : Promise.resolve({ success: false }),
+                    generateBoxDesign ? aiService.generateImageWithStabilityAI(`Front of product box, title "${boxName}", ${basePrompt}`, 'png', '1:1') : Promise.resolve({ success: false }),
+                    generateBoxDesign ? aiService.generateImageWithStabilityAI(`Back of product box, retail packaging, ${basePrompt}`, 'png', '1:1') : Promise.resolve({ success: false }),
+                    generateBoxDesign ? aiService.generateImageWithStabilityAI(`Seamless, intricate background pattern, ${basePrompt}`, 'png', '1:1') : Promise.resolve({ success: false })
+                ]);
+                return { bgResult: bgRes, backResult: backRes, mainIllustrationResult: charRes, boxFrontResult: boxFrontRes, boxBackResult: boxBackRes, patternResult: patternRes };
+            })()
+        ]);
+
+        const { textItemsArray, finalBoxName, finalBoxDescription } = textData;
+        const { bgResult, backResult, mainIllustrationResult, boxFrontResult, boxBackResult, patternResult } = visualData;
+
+        const boxWidthPx = Math.round(defaultCardWidthPx * 1.05);
+        const boxHeightPx = Math.round(defaultCardHeightPx * 1.05);
+        const savedBox = await new Box({ name: finalBoxName, description: finalBoxDescription, userId, isGuestBox: isGuest, defaultCardWidthPx, defaultCardHeightPx, boxWidthPx, boxHeightPx }).save();
+        const savedTemplate = await new CardTemplate({ boxId: savedBox._id }).save();
+        savedBox.cardTemplateId = savedTemplate._id;
+
+        const masterFrontElements = [];
+        if (bgResult.success) masterFrontElements.push({ type: 'image', imageUrl: bgResult.data, zIndex: 0, x: 0, y: 0, width: defaultCardWidthPx, height: defaultCardHeightPx });
+        if (mainIllustrationResult.success) {
+            const refinedUri = await aiService.removeBackgroundWithPixian(Buffer.from(mainIllustrationResult.data.split(',')[1], 'base64'));
+            const charSize = 280; masterFrontElements.push({ type: 'image', imageUrl: refinedUri || mainIllustrationResult.data, zIndex: 2, x: (defaultCardWidthPx - charSize) / 2, y: (defaultCardHeightPx - charSize) / 2, width: charSize, height: charSize });
+        }
+        const frontTemplateElements = await Element.insertMany(masterFrontElements.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId, isFrontElement: true })));
+        savedTemplate.frontElements = frontTemplateElements.map(e => e._id);
+        const backTemplateElements = [];
+        if (backResult.success) {
+            const backEl = await new Element({ type: 'image', imageUrl: backResult.data, zIndex: 0, x: 0, y: 0, width: defaultCardWidthPx, height: defaultCardHeightPx, isFrontElement: false, boxId: savedBox._id, isGuestElement: isGuest, userId }).save();
+            backTemplateElements.push(backEl);
+        }
+        savedTemplate.backElements = backTemplateElements.map(e => e._id);
+        await savedTemplate.save();
+
+        for (let i = 0; i < numCardsInDeck; i++) {
+            const textBg = await new Element({ type: 'shape', zIndex: 3, x: 40, y: 275, width: 235, height: 120, fillColor: 'rgba(0,0,0,0.5)', borderRadius: 15, boxId: savedBox._id, isGuestElement: isGuest, userId }).save();
+            const textEl = await new Element({ type: 'text', content: textItemsArray[i], zIndex: 5, x: 50, y: 280, width: 215, height: 120, color: '#FFFFFF', boxId: savedBox._id, isGuestElement: isGuest, userId }).save();
+            await new Card({ name: `${finalBoxName} - Card ${i + 1}`, boxId: savedBox._id, userId, isGuestCard: isGuest, orderInBox: i, widthPx: defaultCardWidthPx, heightPx: defaultCardHeightPx, elements: [textBg._id, textEl._id] }).save();
         }
 
-        // const userId = req.user ? req.user.id : null;
-        // const isGuest = !userId;
-        const canUseStabilityAI = !!process.env.STABILITY_API_KEY;
-        const canUseBgRemoval = !!process.env.PIXIAN_API_KEY && !!process.env.PIXIAN_API_SECRET;
+        if (generateBoxDesign) {
+            const boxFront = [], boxBack = [], boxTop = [], boxBottom = [], boxLeft = [], boxRight = [];
+            if (boxFrontResult.success) boxFront.push({ type: 'image', imageUrl: boxFrontResult.data, zIndex: 0, x: 0, y: 0, width: boxWidthPx, height: boxHeightPx });
+            if (boxBackResult.success) boxBack.push({ type: 'image', imageUrl: boxBackResult.data, zIndex: 0, x: 0, y: 0, width: boxWidthPx, height: boxHeightPx });
 
-        if (!boxName || !userPrompt) { return errorResponse(res, "Box name and prompt are required.", 400); }
+            let dominantColor = '#34495e';
+            if (boxFrontResult.success) {
+                try { const colors = await getImageColors(Buffer.from(boxFrontResult.data.split(',')[1], 'base64')); dominantColor = colors[0].hex(); } catch (e) { console.warn("Color analysis failed."); }
+            }
 
-        // --- PHASE 1: AI BRAINSTORMING ---
-        const textListPrompt = `Generate a list of ${numCardsInDeck} unique, concise questions about: "${userPrompt}".`;
-        const sharedPromises = [
-            aiService.generateTextWithGemini(textListPrompt, undefined, CONCISE_DUMMY_DATA_SYSTEM_INSTRUCTION),
-            aiService.generateTextWithGemini(userPrompt, undefined, CARD_TITLE_SYSTEM_INSTRUCTION),
-            aiService.generateTextWithGemini(userPrompt, undefined, DECORATIVE_ELEMENT_IDEAS_SYSTEM_INSTRUCTION)
-        ];
-        const [ textListData, title, decorativeIdeasText ] = await Promise.all(sharedPromises);
+            const sidePanelShape = { type: 'shape', shapeType: 'rectangle', fillColor: dominantColor, zIndex: 0, x: 0, y: 0 };
+            const sidePanelElements = [sidePanelShape];
+            if (patternResult.success) {
+                sidePanelElements.push({ type: 'image', imageUrl: patternResult.data, zIndex: 1, x: 0, y: 0, opacity: 0.3 });
+            }
+
+            const panelDepth = Math.round(boxWidthPx * 0.3);
+            boxLeft.push(...sidePanelElements.map(el => ({ ...el, width: panelDepth, height: boxHeightPx })));
+            boxRight.push(...sidePanelElements.map(el => ({ ...el, width: panelDepth, height: boxHeightPx })));
+            boxTop.push(...sidePanelElements.map(el => ({ ...el, width: boxWidthPx, height: panelDepth })));
+            boxBottom.push(...sidePanelElements.map(el => ({ ...el, width: boxWidthPx, height: panelDepth })));
+
+            const [fe, be, te, boe, le, re] = await Promise.all([
+                Element.insertMany(boxFront.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId }))),
+                Element.insertMany(boxBack.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId, isFrontElement: false }))),
+                Element.insertMany(boxTop.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId }))),
+                Element.insertMany(boxBottom.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId }))),
+                Element.insertMany(boxLeft.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId }))),
+                Element.insertMany(boxRight.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId })))
+            ]);
+
+            savedBox.boxDesign = {
+                frontElements: fe.map(e => e._id), backElements: be.map(e => e._id),
+                topElements: te.map(e => e._id), bottomElements: boe.map(e => e._id),
+                leftElements: le.map(e => e._id), rightElements: re.map(e => e._id)
+            };
+            await savedBox.save();
+        }
+
+        const finalBox = await Box.findById(savedBox._id).populate(populateBoxPaths).lean();
+        const finalCardTemplate = await CardTemplate.findById(savedTemplate._id).populate('frontElements backElements').lean();
+        const finalCards = await Card.find({ boxId: savedBox._id }).populate('elements').lean();
+
+        successResponse(res, `Box "${finalBoxName}" created.`, { box: normalizeBox(finalBox), cardTemplate: finalCardTemplate, cards: finalCards }, 201);
+    } catch (error) {
+        console.error("Error in generateNewDeckAndBox Controller:", error);
+        errorResponse(res, "Error generating new deck and box.", 500, "DECK_GENERATION_FAILED", error.message);
+    }
+};
+
+
+exports.generateNewDeckAndBoxOldNew = async (req, res) => {
+    console.log("BOX_CONTROLLER: generateNewDeckAndBox (Final & Simplified Box Design) started.");
+    const generationWarnings = [];
+    try {
+        const {
+            userPrompt,
+            boxName,
+            boxDescription: userBoxDescription,
+            genre = "Fantasy",
+            numCardsInDeck = 1,
+            generateBoxDesign = true,
+            includeCharacterArt = false,
+            defaultCardWidthPx = 315,
+            defaultCardHeightPx = 440,
+            ruleSetId,
+            cardColorTheme = '#5D4037'
+        } = req.body;
+
+        let userId = null;
+        let isGuest = true;
+        if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+            const token = req.headers.authorization.split(' ')[1];
+            try {
+                const decoded = jwt.verify(token, process.env.JWT_SECRET);
+                const user = await User.findById(decoded.id);
+                if (user) { userId = user._id; isGuest = false; }
+            } catch (err) { /* proceed as guest */ }
+        }
+        if (!userPrompt) return errorResponse(res, "An AI Prompt is required.", 400);
+
+        // --- PHASE 1: RULESET, FONT, & TEXT GENERATION ---
+        let game_rules = null;
+        let rulesContextString = "No specific rules provided.";
+        if (ruleSetId) {
+            if (!mongoose.Types.ObjectId.isValid(ruleSetId)) return errorResponse(res, "Invalid RuleSet ID format.", 400);
+            const ruleSet = await RuleSet.findById(ruleSetId);
+            if (!ruleSet) return errorResponse(res, "RuleSet with the provided ID not found.", 404);
+            if (!isGuest && ruleSet.userId && ruleSet.userId.toString() !== userId.toString()) return errorResponse(res, "You are not authorized to use this RuleSet.", 403);
+            game_rules = { rules_data: ruleSet.rules_data.map(r => ({ ...r })) };
+            rulesContextString = game_rules.rules_data.map(rule => `- ${rule.heading}: ${rule.description}`).join('\n');
+        }
+
+        let selectedFontFamily;
+        switch (genre.toLowerCase()) {
+            case 'fantasy': case 'mythology': selectedFontFamily = "'MedievalSharp', cursive"; break;
+            case 'sci-fi': case 'cyberpunk': selectedFontFamily = "'Orbitron', sans-serif"; break;
+            case 'horror': selectedFontFamily = "'Creepster', cursive"; break;
+            case 'educational': selectedFontFamily = "'Comic Sans MS', cursive"; break;
+            default: selectedFontFamily = "'Roboto', sans-serif";
+        }
+
+        const [textListData, finalBoxNameResult, aiBoxDescription] = await Promise.all([
+            aiService.generateTextWithGemini(`Game Context:\n${rulesContextString}\n\nBased on the theme "${userPrompt}" and genre "${genre}", generate a list of ${numCardsInDeck} unique pieces of text content for game cards.`, undefined, CONCISE_DUMMY_DATA_SYSTEM_INSTRUCTION),
+            boxName ? Promise.resolve(boxName) : aiService.generateTextWithGemini(userPrompt, undefined, CARD_TITLE_SYSTEM_INSTRUCTION),
+            userBoxDescription ? Promise.resolve(userBoxDescription) : aiService.generateTextWithGemini(userPrompt, undefined, aiService.BOX_DESCRIPTION_SYSTEM_INSTRUCTION)
+        ]);
+        const finalBoxName = boxName || finalBoxNameResult.trim();
+        const finalBoxDescription = userBoxDescription || aiBoxDescription.trim();
         let textItemsArray = (textListData || '').split('\n').map(item => item.trim()).filter(Boolean);
-        while (textItemsArray.length < numCardsInDeck) { textItemsArray.push(`[Problem ${textItemsArray.length + 1}]`); }
-        const cardTitle = title.trim() || "Fun Adventure";
-        const decorativeIdeas = decorativeIdeasText.split(',').map(s => s.trim()).filter(Boolean);
-        
-        const supportedRatios = [{ string: "2:3", value: 2/3 }, { string: "3:2", value: 3/2 }, { string: "1:1", value: 1/1 }];
-        const finalAspectRatioForAI = getClosestSupportedAspectRatio(defaultCardWidthPx, defaultCardHeightPx, supportedRatios);
+        while (textItemsArray.length < numCardsInDeck) { textItemsArray.push(`[Content ${textItemsArray.length + 1}]`); }
 
-        // --- PHASE 2: GATHER & REFINE SHARED ELEMENTS ---
-        let sharedBackgroundUri = fallbackBackgroundUri;
-        let initialDecorativeUris = fallbackDecorativeUris;
+        // --- PHASE 2: VISUAL ASSET GENERATION ---
+        const cardAspectRatio = getClosestSupportedAspectRatio(defaultCardWidthPx, defaultCardHeightPx, [{ string: "2:3", value: 2/3 }, { string: "3:2", value: 3/2 }, { string: "1:1", value: 1/1 }]);
+        const baseArtPrompt = `${userPrompt}, ${genre}, ${cardColorTheme}, digital art, cinematic lighting, high detail.`;
+        const backgroundPrompt = `Scenic atmospheric landscape art for a TCG background, including an integrated decorative frame, no characters, no text, ${baseArtPrompt}`;
+        const illustrationPrompt = `Isolated TCG character art, full body, on a plain solid white background, NO shadows, NO environment, ${baseArtPrompt}`;
+        const boxFrontPrompt = `Product packaging art for the 2D front of a tuck box, a title box with decorative frame written the text: "${finalBoxName}", ${baseArtPrompt}`;
+        const boxBackPrompt = `Back of product box, retail packaging, ${baseArtPrompt}`;
+        const sidePanelPatternPrompt = `Seamless, intricate, decrative but less quantitative textures(shapes,lines) only with aspect ratios (9:21), thematic background pattern with lines and shapes based on the related content for ${boxName}, just to fit on box sides, must not have characters, must not have text`;
 
-        if (canUseStabilityAI) {
-            if (!sharedBackgroundUri) {
-                const backgroundPrompt = `A simple, clean, vibrant, colorful gradient background for a children's flashcard about "${userPrompt}". No objects, no text, no patterns.`;
-                sharedBackgroundUri = await aiService.generateImageWithStabilityAI(backgroundPrompt, imageOutputFormatForDeck, finalAspectRatioForAI);
-            }
-            if (initialDecorativeUris.length === 0) {
-                const decorativePromises = decorativeIdeas.map(idea => aiService.generateImageWithStabilityAI(`A single, cute, small cartoon ${idea}, sticker style.`, 'png', '1:1').catch(e => null));
-                initialDecorativeUris = await Promise.all(decorativePromises);
-            }
-        }
-        
-        let refinedDecorativeUris = [];
-        if (canUseBgRemoval && initialDecorativeUris.length > 0) {
-            console.log("Refining decorative element images...");
-            const bgRemovalPromises = initialDecorativeUris.filter(Boolean).map(uri => aiService.removeBackgroundWithPixian(Buffer.from(uri.split(',')[1], 'base64')));
-            refinedDecorativeUris = await Promise.all(bgRemovalPromises);
-            // --- FIX IS HERE: If refinement failed, fall back to the unrefined images ---
-            if (refinedDecorativeUris.every(uri => uri === null)) {
-                console.warn("Background removal for all decorative elements failed. Using original images as fallback.");
-                refinedDecorativeUris = initialDecorativeUris;
-            }
-        } else {
-            refinedDecorativeUris = initialDecorativeUris;
-        }
+        const [bgResult, backResult, mainIllustrationResult, boxFrontResult, boxBackResult, patternResult] = await Promise.all([
+            aiService.generateImageWithStabilityAI(backgroundPrompt, 'png', cardAspectRatio),
+            aiService.generateImageWithStabilityAI(`Card back design, should include theme for: ${boxName}. ${aiService.CARD_BACK_DESIGN_PROMPT_ADDITION}`, 'png', cardAspectRatio),
+            includeCharacterArt ? aiService.generateImageWithStabilityAI(illustrationPrompt, 'png', '1:1') : Promise.resolve({ success: false }),
+            generateBoxDesign ? aiService.generateImageWithStabilityAI(boxFrontPrompt, 'png', '1:1') : Promise.resolve({ success: false }),
+            generateBoxDesign ? aiService.generateImageWithStabilityAI(boxBackPrompt, 'png', '1:1') : Promise.resolve({ success: false }),
+            generateBoxDesign ? aiService.generateImageWithStabilityAI(sidePanelPatternPrompt, 'png', '1:1') : Promise.resolve({ success: false })
+        ]);
 
         // --- PHASE 3: DATABASE ASSEMBLY ---
-        const newBoxData = {
-            name: boxName.trim(), description: boxDescription, userId: userId, isGuestBox: isGuest,
-            defaultCardWidthPx: defaultCardWidthPx, defaultCardHeightPx: defaultCardHeightPx,
-            baseAISettings: { userPrompt, genre, accentColorHex, imageAspectRatio: finalAspectRatioForAI, imageOutputFormat: imageOutputFormatForDeck }
-        };
+        const boxWidthPx = Math.round(defaultCardWidthPx * 1.05);
+        const boxHeightPx = Math.round(defaultCardHeightPx * 1.05);
+        const newBoxData = { name: finalBoxName, description: finalBoxDescription, userId, isGuestBox: isGuest, defaultCardWidthPx, defaultCardHeightPx, boxWidthPx, boxHeightPx, ruleSetId: ruleSetId || null, game_rules, baseAISettings: { userPrompt, genre, cardColorTheme, fontFamily: selectedFontFamily } };
         const savedBox = await new Box(newBoxData).save();
-        console.log("BOX_CONTROLLER: Box saved, ID:", savedBox._id);
+        const savedTemplate = await new CardTemplate({ boxId: savedBox._id }).save();
+        savedBox.cardTemplateId = savedTemplate._id;
+        await savedBox.save();
 
-        const generatedCardsDataForResponse = [];
+        const masterFrontElementsData = [];
+        if (bgResult.success) masterFrontElementsData.push({ type: 'image', imageUrl: bgResult.data, zIndex: 0, x: 0, y: 0, width: defaultCardWidthPx, height: defaultCardHeightPx }); else generationWarnings.push(bgResult.error);
+        if (mainIllustrationResult.success) {
+            const refinedUri = await aiService.removeBackgroundWithPixian(Buffer.from(mainIllustrationResult.data.split(',')[1], 'base64'));
+            const charSize = defaultCardWidthPx * 0.9;
+            masterFrontElementsData.push({ type: 'image', imageUrl: refinedUri || mainIllustrationResult.data, zIndex: 2, x: (defaultCardWidthPx - charSize) / 2, y: (defaultCardHeightPx - charSize) / 2, width: charSize, height: charSize });
+        } else if (includeCharacterArt) { generationWarnings.push(mainIllustrationResult.error); }
+        const titleColor = getContrastingTextColor(cardColorTheme);
+        masterFrontElementsData.push({ type: 'text', content: finalBoxName, zIndex: 4, x: 0, y: 20, width: defaultCardWidthPx, height: 40, color: titleColor, fontFamily: selectedFontFamily, textAlign: 'center', fontSize: "28px", fontWeight: 'bold' });
+
+        const masterBackElementsData = [];
+        if (backResult.success) masterBackElementsData.push({ type: 'image', imageUrl: backResult.data, zIndex: 0, x: 0, y: 0, width: defaultCardWidthPx, height: defaultCardHeightPx, isFrontElement: false }); else generationWarnings.push(backResult.error);
+
+        const frontTemplateElements = await Element.insertMany(masterFrontElementsData.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId, isFrontElement: true })));
+        const backTemplateElements = await Element.insertMany(masterBackElementsData.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId })));
+        savedTemplate.frontElements = frontTemplateElements.map(e => e._id);
+        savedTemplate.backElements = backTemplateElements.map(e => e._id);
+        await savedTemplate.save();
+
+        const savedCardsForResponse = [];
         for (let i = 0; i < numCardsInDeck; i++) {
-            const individualCardText = textItemsArray[i];
-            let initialCharUris = fallbackCharacterUris;
-            
-            if (canUseStabilityAI && initialCharUris.length === 0) {
-                const charIdeasText = await aiService.generateTextWithGemini(`Text: "${individualCardText}"`, undefined, ILLUSTRATION_IDEAS_SYSTEM_INSTRUCTION);
-                const charIdeas = charIdeasText.split(',').map(s => s.trim()).filter(Boolean);
-                const initialCharPromises = charIdeas.map(idea => aiService.generateImageWithStabilityAI(`Cute cartoon illustration of ${idea}, for a children's game.`, 'png', '1:1').catch(e => null));
-                initialCharUris = await Promise.all(initialCharPromises);
+            const textBgShape = await new Element({ type: 'shape', shapeType: 'rectangle', zIndex: 3, x: 40, y: 275, width: defaultCardWidthPx - 80, height: 120, fillColor: 'rgba(0, 0, 0, 0.5)', borderRadius: 15, boxId: savedBox._id, isGuestElement: isGuest, userId }).save();
+            const textElement = await new Element({ type: 'text', content: textItemsArray[i], zIndex: 5, x: 50, y: 280, width: defaultCardWidthPx - 100, height: 120, color: '#FFFFFF', fontFamily: "'Roboto', sans-serif", textAlign: 'center', fontSize: "18px", boxId: savedBox._id, isGuestElement: isGuest, userId }).save();
+            const savedCard = await new Card({ name: `${finalBoxName} - Card ${i + 1}`, boxId: savedBox._id, userId, isGuestCard: isGuest, orderInBox: i, widthPx: defaultCardWidthPx, heightPx: defaultCardHeightPx, isCustomDesign: false, elements: [textBgShape._id, textElement._id] }).save();
+            const cardObject = await Card.findById(savedCard._id).populate('elements').lean();
+            savedCardsForResponse.push(cardObject);
+        }
+        if (generateBoxDesign) {
+            const boxFront = [], boxBack = [], boxTop = [], boxBottom = [], boxLeft = [], boxRight = [];
+            if (boxFrontResult.success) boxFront.push({ type: 'image', imageUrl: boxFrontResult.data, zIndex: 0, x: 0, y: 0, width: boxWidthPx, height: boxHeightPx });
+            if (boxBackResult.success) boxBack.push({ type: 'image', imageUrl: boxBackResult.data, zIndex: 0, x: 0, y: 0, width: boxWidthPx, height: boxHeightPx });
+
+            let dominantColor = '#34495e';
+            if (boxFrontResult.success) {
+                try { const colors = await getImageColors(Buffer.from(boxFrontResult.data.split(',')[1], 'base64')); dominantColor = colors[0].hex(); } catch (e) { console.warn("Color analysis failed."); }
             }
 
-            let refinedCharacterUris = [];
-            if(canUseBgRemoval && initialCharUris.length > 0){
-                const charBgRemovalPromises = initialCharUris.filter(Boolean).map(uri => aiService.removeBackgroundWithPixian(Buffer.from(uri.split(',')[1], 'base64')));
-                refinedCharacterUris = await Promise.all(charBgRemovalPromises);
-                // --- FIX IS HERE: If refinement failed, fall back to the unrefined images ---
-                if (refinedCharacterUris.every(uri => uri === null)) {
-                    console.warn(`Background removal for all characters on Card ${i+1} failed. Using original images as fallback.`);
-                    refinedCharacterUris = initialCharUris;
-                }
-            } else {
-                refinedCharacterUris = initialCharUris;
+            const sidePanelShape = { type: 'shape', shapeType: 'rectangle', fillColor: dominantColor, zIndex: 0, x: 0, y: 0 };
+            const sidePanelElements = [sidePanelShape];
+            if (patternResult.success) {
+                sidePanelElements.push({ type: 'image', imageUrl: patternResult.data, zIndex: 1, x: 0, y: 0, opacity: 0.3 });
             }
-            
-            const tempCardId = new mongoose.Types.ObjectId();
-            const cardFrontElementDocsData = [];
-            
-            if (sharedBackgroundUri) { cardFrontElementDocsData.push({ type: 'image', imageUrl: sharedBackgroundUri, zIndex: 0, x: 0, y: 0, width: defaultCardWidthPx, height: defaultCardHeightPx }); }
-            
-            const copiesPerDecorativeItem = 4;
-            refinedDecorativeUris.filter(Boolean).forEach(uri => {
-                for (let j = 0; j < copiesPerDecorativeItem; j++) {
-                    const decorativeSize = Math.random() * 15 + 15;
-                    cardFrontElementDocsData.push({ type: 'image', imageUrl: uri, zIndex: 1, x: Math.random() * (defaultCardWidthPx - decorativeSize), y: Math.random() * (defaultCardHeightPx - decorativeSize), width: decorativeSize, height: decorativeSize, rotation: Math.random() * 360 });
-                }
-            });
 
-            const charSize = defaultCardWidthPx * 0.4;
-            // This logic is now simpler, as refinedCharacterUris will always hold the correct images (refined or fallback)
-            if (refinedCharacterUris[0]) cardFrontElementDocsData.push({ type: 'image', imageUrl: refinedCharacterUris[0], zIndex: 2, x: 20, y: defaultCardHeightPx - charSize - 20, width: charSize, height: charSize });
-            if (refinedCharacterUris[1]) cardFrontElementDocsData.push({ type: 'image', imageUrl: refinedCharacterUris[1], zIndex: 2, x: defaultCardWidthPx - charSize - 20, y: defaultCardHeightPx - charSize - 20, width: charSize, height: charSize });
+            const panelDepth = Math.round(boxWidthPx * 0.3);
+            boxLeft.push(...sidePanelElements.map(el => ({ ...el, width: panelDepth, height: boxHeightPx })));
+            boxRight.push(...sidePanelElements.map(el => ({ ...el, width: panelDepth, height: boxHeightPx })));
+            boxTop.push(...sidePanelElements.map(el => ({ ...el, width: boxWidthPx, height: panelDepth })));
+            boxBottom.push(...sidePanelElements.map(el => ({ ...el, width: boxWidthPx, height: panelDepth })));
 
-            const questionBoxHeight = 100;
-            cardFrontElementDocsData.push({ type: 'shape', shapeType: 'rectangle', zIndex: 3, x: 40, y: 150, width: defaultCardWidthPx - 80, height: questionBoxHeight, fillColor: 'rgba(255, 255, 255, 0.9)', borderRadius: 20 });
-            cardFrontElementDocsData.push({ type: 'text', content: cardTitle, zIndex: 4, x: 0, y: 40, width: defaultCardWidthPx, height: 60, color: '#5C3A92', textAlign: 'center', fontSize: "35px", fontFamily: "Arial Rounded MT Bold, Comic Sans MS, cursive, sans-serif", fontWeight: 'bold' });
-            cardFrontElementDocsData.push({ type: 'text', content: individualCardText, zIndex: 4, x: 50, y: 155, width: defaultCardWidthPx - 100, height: questionBoxHeight - 10, color: '#333333', textAlign: 'center', fontSize: "20px", fontFamily: "Arial, sans-serif" });
+            const [fe, be, te, boe, le, re] = await Promise.all([
+                Element.insertMany(boxFront.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId }))),
+                Element.insertMany(boxBack.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId, isFrontElement: false }))),
+                Element.insertMany(boxTop.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId }))),
+                Element.insertMany(boxBottom.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId }))),
+                Element.insertMany(boxLeft.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId }))),
+                Element.insertMany(boxRight.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId })))
+            ]);
 
-            const elementsToCreate = cardFrontElementDocsData.map(el => ({ ...el, cardId: tempCardId, boxId: savedBox._id, isGuestElement: isGuest, userId: userId, isFrontElement: true }));
-            const savedFrontElements = await Element.insertMany(elementsToCreate);
-
-            const cardToSave = new Card({ _id: tempCardId, name: `${savedBox.name} - Card ${i + 1}`, boxId: savedBox._id, userId: userId, isGuestCard: isGuest, orderInBox: i, widthPx: defaultCardWidthPx, heightPx: defaultCardHeightPx, cardFrontElementIds: savedFrontElements.map(el => el._id), cardBackElementIds: [] });
-            const savedCard = await cardToSave.save();
-            const cardForResponse = savedCard.toObject();
-            cardForResponse.cardFrontElements = savedFrontElements.map(el => el.toObject());
-            generatedCardsDataForResponse.push(cardForResponse);
+            savedBox.boxDesign = {
+                frontElements: fe.map(e => e._id), backElements: be.map(e => e._id),
+                topElements: te.map(e => e._id), bottomElements: boe.map(e => e._id),
+                leftElements: le.map(e => e._id), rightElements: re.map(e => e._id)
+            };
+            await savedBox.save();
         }
 
-        const boxResponseObject = savedBox.toObject();
-        boxResponseObject.cards = generatedCardsDataForResponse;
-        successResponse(res, `Box "${savedBox.name}" and ${generatedCardsDataForResponse.length} cards created with refined, editable layers.`, { box: boxResponseObject }, 201);
+        const finalBox = await Box.findById(savedBox._id).populate(populateBoxPaths).lean();
+        const finalCardTemplate = await CardTemplate.findById(savedTemplate._id).populate('frontElements backElements').lean();
+        const finalCards = await Card.find({ boxId: savedBox._id }).populate('elements').lean();
+
+        successResponse(res, `Box "${finalBoxName}" created.`, { box: normalizeBox(finalBox), cardTemplate: finalCardTemplate, cards: finalCards }, 201);
+    } catch (error) {
+        console.error("Error in generateNewDeckAndBox Controller:", error);
+        errorResponse(res, "Error generating new deck and box.", 500, "DECK_GENERATION_FAILED", error.message);
+    }
+};
+
+exports.generateNewDeckAndBoxOldOld = async (req, res) => {
+    console.log("BOX_CONTROLLER: generateNewDeckAndBox (Final & Simplified Box Design) started.");
+    const generationWarnings = [];
+    try {
+        const {
+            userPrompt,
+            boxName,
+            boxDescription: userBoxDescription,
+            genre = "Fantasy",
+            numCardsInDeck = 1,
+            generateBoxDesign = true,
+            includeCharacterArt = false,
+            defaultCardWidthPx = 315,
+            defaultCardHeightPx = 440,
+            ruleSetId,
+            cardColorTheme = '#5D4037'
+        } = req.body;
+
+        let userId = null;
+        let isGuest = true;
+        if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+            const token = req.headers.authorization.split(' ')[1];
+            try {
+                const decoded = jwt.verify(token, process.env.JWT_SECRET);
+                const user = await User.findById(decoded.id);
+                if (user) { userId = user._id; isGuest = false; }
+            } catch (err) { /* proceed as guest */ }
+        }
+        if (!userPrompt) return errorResponse(res, "An AI Prompt is required.", 400);
+
+        // --- PHASE 1: RULESET, FONT, & TEXT GENERATION ---
+        let game_rules = null;
+        let rulesContextString = "No specific rules provided.";
+        if (ruleSetId) {
+            if (!mongoose.Types.ObjectId.isValid(ruleSetId)) return errorResponse(res, "Invalid RuleSet ID format.", 400);
+            const ruleSet = await RuleSet.findById(ruleSetId);
+            if (!ruleSet) return errorResponse(res, "RuleSet with the provided ID not found.", 404);
+            if (!isGuest && ruleSet.userId && ruleSet.userId.toString() !== userId.toString()) return errorResponse(res, "You are not authorized to use this RuleSet.", 403);
+            game_rules = { rules_data: ruleSet.rules_data.map(r => ({ ...r })) };
+            rulesContextString = game_rules.rules_data.map(rule => `- ${rule.heading}: ${rule.description}`).join('\n');
+        }
+
+        let selectedFontFamily;
+        switch (genre.toLowerCase()) {
+            case 'fantasy': case 'mythology': selectedFontFamily = "'MedievalSharp', cursive"; break;
+            case 'sci-fi': case 'cyberpunk': selectedFontFamily = "'Orbitron', sans-serif"; break;
+            case 'horror': selectedFontFamily = "'Creepster', cursive"; break;
+            case 'educational': selectedFontFamily = "'Comic Sans MS', cursive"; break;
+            default: selectedFontFamily = "'Roboto', sans-serif";
+        }
+
+        const [textListData, finalBoxNameResult, aiBoxDescription] = await Promise.all([
+            aiService.generateTextWithGemini(`Game Context:\n${rulesContextString}\n\nBased on the theme "${userPrompt}" and genre "${genre}", generate a list of ${numCardsInDeck} unique pieces of text content for game cards.`, undefined, CONCISE_DUMMY_DATA_SYSTEM_INSTRUCTION),
+            boxName ? Promise.resolve(boxName) : aiService.generateTextWithGemini(userPrompt, undefined, CARD_TITLE_SYSTEM_INSTRUCTION),
+            userBoxDescription ? Promise.resolve(userBoxDescription) : aiService.generateTextWithGemini(userPrompt, undefined, aiService.BOX_DESCRIPTION_SYSTEM_INSTRUCTION)
+        ]);
+        const finalBoxName = boxName || finalBoxNameResult.trim();
+        const finalBoxDescription = userBoxDescription || aiBoxDescription.trim();
+        let textItemsArray = (textListData || '').split('\n').map(item => item.trim()).filter(Boolean);
+        while (textItemsArray.length < numCardsInDeck) { textItemsArray.push(`[Content ${textItemsArray.length + 1}]`); }
+
+        // --- PHASE 2: VISUAL ASSET GENERATION ---
+        const cardAspectRatio = getClosestSupportedAspectRatio(defaultCardWidthPx, defaultCardHeightPx, [{ string: "2:3", value: 2/3 }, { string: "3:2", value: 3/2 }, { string: "1:1", value: 1/1 }]);
+        const baseArtPrompt = `${userPrompt}, ${genre}, ${cardColorTheme}, digital art, cinematic lighting, high detail.`;
+        const backgroundPrompt = `Scenic atmospheric landscape art for a TCG background, including an integrated decorative frame, no characters, no text, ${baseArtPrompt}`;
+        const illustrationPrompt = `Isolated TCG character art, full body, on a plain solid white background, NO shadows, NO environment, ${baseArtPrompt}`;
+        const boxFrontPrompt = `Product packaging art for the 2D front of a tuck box, a title box with decorative frame written the text: "${finalBoxName}", ${baseArtPrompt}`;
+        const boxBackPrompt = `Back of product box, retail packaging, ${baseArtPrompt}`;
+        const sidePanelPatternPrompt = `Seamless, intricate, decrative but less quantitative textures(shapes,lines) only with aspect ratios (9:21), thematic background pattern with lines and shapes based on the related content for ${boxName}, just to fit on box sides, must not have characters, must not have text`;
+
+        const [bgResult, backResult, mainIllustrationResult, boxFrontResult, boxBackResult, patternResult] = await Promise.all([
+            aiService.generateImageWithStabilityAI(backgroundPrompt, 'png', cardAspectRatio),
+            aiService.generateImageWithStabilityAI(`Card back design, should include theme for: ${boxName}. ${aiService.CARD_BACK_DESIGN_PROMPT_ADDITION}`, 'png', cardAspectRatio),
+            includeCharacterArt ? aiService.generateImageWithStabilityAI(illustrationPrompt, 'png', '1:1') : Promise.resolve({ success: false }),
+            generateBoxDesign ? aiService.generateImageWithStabilityAI(boxFrontPrompt, 'png', '1:1') : Promise.resolve({ success: false }),
+            generateBoxDesign ? aiService.generateImageWithStabilityAI(boxBackPrompt, 'png', '1:1') : Promise.resolve({ success: false }),
+            generateBoxDesign ? aiService.generateImageWithStabilityAI(sidePanelPatternPrompt, 'png', '1:1') : Promise.resolve({ success: false })
+        ]);
+
+        // --- PHASE 3: DATABASE ASSEMBLY ---
+        const boxWidthPx = Math.round(defaultCardWidthPx * 1.05);
+        const boxHeightPx = Math.round(defaultCardHeightPx * 1.05);
+        const newBoxData = { name: finalBoxName, description: finalBoxDescription, userId, isGuestBox: isGuest, defaultCardWidthPx, defaultCardHeightPx, boxWidthPx, boxHeightPx, ruleSetId: ruleSetId || null, game_rules, baseAISettings: { userPrompt, genre, cardColorTheme, fontFamily: selectedFontFamily } };
+        const savedBox = await new Box(newBoxData).save();
+        const savedTemplate = await new CardTemplate({ boxId: savedBox._id }).save();
+        savedBox.cardTemplateId = savedTemplate._id;
+        await savedBox.save();
+
+        const masterFrontElementsData = [];
+        if (bgResult.success) masterFrontElementsData.push({ type: 'image', imageUrl: bgResult.data, zIndex: 0, x: 0, y: 0, width: defaultCardWidthPx, height: defaultCardHeightPx }); else generationWarnings.push(bgResult.error);
+        if (mainIllustrationResult.success) {
+            const refinedUri = await aiService.removeBackgroundWithPixian(Buffer.from(mainIllustrationResult.data.split(',')[1], 'base64'));
+            const charSize = defaultCardWidthPx * 0.9;
+            masterFrontElementsData.push({ type: 'image', imageUrl: refinedUri || mainIllustrationResult.data, zIndex: 2, x: (defaultCardWidthPx - charSize) / 2, y: (defaultCardHeightPx - charSize) / 2, width: charSize, height: charSize });
+        } else if (includeCharacterArt) { generationWarnings.push(mainIllustrationResult.error); }
+        const titleColor = getContrastingTextColor(cardColorTheme);
+        masterFrontElementsData.push({ type: 'text', content: finalBoxName, zIndex: 4, x: 0, y: 20, width: defaultCardWidthPx, height: 40, color: titleColor, fontFamily: selectedFontFamily, textAlign: 'center', fontSize: "28px", fontWeight: 'bold' });
+
+        const masterBackElementsData = [];
+        if (backResult.success) masterBackElementsData.push({ type: 'image', imageUrl: backResult.data, zIndex: 0, x: 0, y: 0, width: defaultCardWidthPx, height: defaultCardHeightPx, isFrontElement: false }); else generationWarnings.push(backResult.error);
+
+        const frontTemplateElements = await Element.insertMany(masterFrontElementsData.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId, isFrontElement: true })));
+        const backTemplateElements = await Element.insertMany(masterBackElementsData.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId })));
+        savedTemplate.frontElements = frontTemplateElements.map(e => e._id);
+        savedTemplate.backElements = backTemplateElements.map(e => e._id);
+        await savedTemplate.save();
+
+        const savedCardsForResponse = [];
+        for (let i = 0; i < numCardsInDeck; i++) {
+            const textBgShape = await new Element({ type: 'shape', shapeType: 'rectangle', zIndex: 3, x: 40, y: 275, width: defaultCardWidthPx - 80, height: 120, fillColor: 'rgba(0, 0, 0, 0.5)', borderRadius: 15, boxId: savedBox._id, isGuestElement: isGuest, userId }).save();
+            const textElement = await new Element({ type: 'text', content: textItemsArray[i], zIndex: 5, x: 50, y: 280, width: defaultCardWidthPx - 100, height: 120, color: '#FFFFFF', fontFamily: "'Roboto', sans-serif", textAlign: 'center', fontSize: "18px", boxId: savedBox._id, isGuestElement: isGuest, userId }).save();
+            const savedCard = await new Card({ name: `${finalBoxName} - Card ${i + 1}`, boxId: savedBox._id, userId, isGuestCard: isGuest, orderInBox: i, widthPx: defaultCardWidthPx, heightPx: defaultCardHeightPx, isCustomDesign: false, elements: [textBgShape._id, textElement._id] }).save();
+            const cardObject = await Card.findById(savedCard._id).populate('elements').lean();
+            savedCardsForResponse.push(cardObject);
+        }
+
+        if (generateBoxDesign) {
+            const boxFront = [], boxBack = [], boxTop = [], boxBottom = [], boxLeft = [], boxRight = [];
+            if (boxFrontResult.success) boxFront.push({ type: 'image', imageUrl: boxFrontResult.data, zIndex: 0, x: 0, y: 0, width: boxWidthPx, height: boxHeightPx }); else generationWarnings.push(boxFrontResult.error);
+            if (boxBackResult.success) boxBack.push({ type: 'image', imageUrl: boxBackResult.data, zIndex: 0, x: 0, y: 0, width: boxWidthPx, height: boxHeightPx }); else generationWarnings.push(boxBackResult.error);
+
+            if (patternResult.success) {
+                // --- THIS IS THE FIX ---
+                // The 'width' and 'height' for the side panels are now correctly defined for dielines.
+                // A typical tuck box has a depth of around 0.75 inches, while the card width is 2.5 inches.
+                const panelDepth = Math.round(boxWidthPx * 0.3); // Approx 30% of the width
+
+                // Left and Right side panels are tall and thin
+                const lrPanelElement = { type: 'image', imageUrl: patternResult.data, zIndex: 0, x: 0, y: 0, width: panelDepth, height: boxHeightPx };
+                boxLeft.push(lrPanelElement);
+                boxRight.push(lrPanelElement);
+
+                // Top and Bottom panels are wide and short
+                const tbPanelElement = { type: 'image', imageUrl: patternResult.data, zIndex: 0, x: 0, y: 0, width: boxWidthPx, height: panelDepth };
+                boxTop.push(tbPanelElement);
+                boxBottom.push(tbPanelElement);
+            } else {
+                generationWarnings.push(patternResult.error);
+            }
+
+            const [fe, be, te, boe, le, re] = await Promise.all([
+                Element.insertMany(boxFront.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId, isFrontElement: true }))),
+                Element.insertMany(boxBack.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId, isFrontElement: false }))),
+                Element.insertMany(boxTop.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId }))),
+                Element.insertMany(boxBottom.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId }))),
+                Element.insertMany(boxLeft.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId }))),
+                Element.insertMany(boxRight.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId })))
+            ]);
+
+            savedBox.boxDesign = {
+                frontElements: fe.map(e => e._id), backElements: be.map(e => e._id),
+                topElements: te.map(e => e._id), bottomElements: boe.map(e => e._id),
+                leftElements: le.map(e => e._id), rightElements: re.map(e => e._id)
+            };
+            savedBox.boxFrontElementIds = fe.map(e => e._id);
+            savedBox.boxBackElementIds = be.map(e => e._id);
+            await savedBox.save();
+        }
+
+        const finalBox = await Box.findById(savedBox._id).populate(populateBoxPaths).lean();
+        const finalCardTemplate = await CardTemplate.findById(savedTemplate._id).populate('frontElements').populate('backElements').lean();
+
+        const finalResponseData = { box: normalizeBox(finalBox), cardTemplate: finalCardTemplate, cards: savedCardsForResponse };
+        const metadata = generationWarnings.length > 0 ? { warnings: [...new Set(generationWarnings)] } : null;
+        successResponse(res, `Box "${finalBoxName}" and ${numCardsInDeck} cards created successfully.`, finalResponseData, 201, metadata);
 
     } catch (error) {
         console.error("Error in generateNewDeckAndBox Controller:", error);
         errorResponse(res, "Error generating new deck and box.", 500, "DECK_GENERATION_FAILED", error.message);
     }
-    console.log("CONTROLLER: generateNewDeckAndBox finished.");
 };
 
-exports.claimBox = async (req, res) => {
-    const { boxId } = req.params;
-    const userId = req.user.id; // From protect middleware
-
+exports.generateNewDeckAndBoxOld = async (req, res) => {
+    console.log("BOX_CONTROLLER: generateNewDeckAndBox (Final & Simplified Box Design) started.");
+    const generationWarnings = [];
     try {
-        const box = await Box.findById(boxId);
-        if (!box) return errorResponse(res, 'Box not found.', 404, "BOX_NOT_FOUND");
-        if (box.userId && box.userId.toString() !== userId.toString()) {
-            return errorResponse(res, 'This box is already owned by another user.', 403, "BOX_OWNED_BY_OTHER");
+        const {
+            userPrompt,
+            boxName,
+            boxDescription: userBoxDescription,
+            genre = "Fantasy",
+            numCardsInDeck = 1,
+            generateBoxDesign = true,
+            includeCharacterArt = false,
+            defaultCardWidthPx = 315,
+            defaultCardHeightPx = 440,
+            ruleSetId,
+            cardColorTheme = '#5D4037'
+        } = req.body;
+
+        let userId = null;
+        let isGuest = true;
+        if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+            const token = req.headers.authorization.split(' ')[1];
+            try {
+                const decoded = jwt.verify(token, process.env.JWT_SECRET);
+                const user = await User.findById(decoded.id);
+                if (user) { userId = user._id; isGuest = false; }
+            } catch (err) { /* proceed as guest */ }
         }
-        if (box.userId && !box.isGuestBox) {
-             return successResponse(res, 'Box already associated with your account.', {box});
+        if (!userPrompt) return errorResponse(res, "An AI Prompt is required.", 400);
+
+        // --- PHASE 1: RULESET, FONT, & TEXT GENERATION ---
+        let game_rules = null;
+        let rulesContextString = "No specific rules provided.";
+        if (ruleSetId) {
+            if (!mongoose.Types.ObjectId.isValid(ruleSetId)) return errorResponse(res, "Invalid RuleSet ID format.", 400);
+            const ruleSet = await RuleSet.findById(ruleSetId);
+            if (!ruleSet) return errorResponse(res, "RuleSet with the provided ID not found.", 404);
+            if (!isGuest && ruleSet.userId && ruleSet.userId.toString() !== userId.toString()) return errorResponse(res, "You are not authorized to use this RuleSet.", 403);
+            game_rules = { rules_data: ruleSet.rules_data.map(r => ({ ...r })) };
+            rulesContextString = game_rules.rules_data.map(rule => `- ${rule.heading}: ${rule.description}`).join('\n');
         }
 
-        box.userId = userId;
-        box.isGuestBox = false;
-        await box.save();
+        let selectedFontFamily;
+        switch (genre.toLowerCase()) {
+            case 'fantasy': case 'mythology': selectedFontFamily = "'MedievalSharp', cursive"; break;
+            case 'sci-fi': case 'cyberpunk': selectedFontFamily = "'Orbitron', sans-serif"; break;
+            case 'horror': selectedFontFamily = "'Creepster', cursive"; break;
+            case 'educational': selectedFontFamily = "'Comic Sans MS', cursive"; break;
+            default: selectedFontFamily = "'Roboto', sans-serif";
+        }
 
-        const cardsInBox = await Card.find({ boxId: box._id });
-        const cardIds = cardsInBox.map(c => c._id);
+        const [textListData, finalBoxNameResult, aiBoxDescription] = await Promise.all([
+            aiService.generateTextWithGemini(`Game Context:\n${rulesContextString}\n\nBased on the theme "${userPrompt}" and genre "${genre}", generate a list of ${numCardsInDeck} unique pieces of text content for game cards.`, undefined, CONCISE_DUMMY_DATA_SYSTEM_INSTRUCTION),
+            boxName ? Promise.resolve(boxName) : aiService.generateTextWithGemini(userPrompt, undefined, CARD_TITLE_SYSTEM_INSTRUCTION),
+            userBoxDescription ? Promise.resolve(userBoxDescription) : aiService.generateTextWithGemini(userPrompt, undefined, aiService.BOX_DESCRIPTION_SYSTEM_INSTRUCTION)
+        ]);
+        const finalBoxName = boxName || finalBoxNameResult.trim();
+        const finalBoxDescription = userBoxDescription || aiBoxDescription.trim();
+        let textItemsArray = (textListData || '').split('\n').map(item => item.trim()).filter(Boolean);
+        while (textItemsArray.length < numCardsInDeck) { textItemsArray.push(`[Content ${textItemsArray.length + 1}]`); }
 
-        await Card.updateMany(
-            { _id: { $in: cardIds }, isGuestCard: true },
-            { $set: { userId: userId, isGuestCard: false } }
-        );
-        await Element.updateMany(
-            { boxId: box._id, isGuestElement: true }, // Elements directly on box OR on cards in this box
-            { $set: { userId: userId, isGuestElement: false } }
-        );
+        // --- PHASE 2: VISUAL ASSET GENERATION ---
+        const cardAspectRatio = getClosestSupportedAspectRatio(defaultCardWidthPx, defaultCardHeightPx, [{ string: "2:3", value: 2/3 }, { string: "3:2", value: 3/2 }, { string: "1:1", value: 1/1 }]);
+        const baseArtPrompt = `${userPrompt}, ${genre}, ${cardColorTheme}, digital art, cinematic lighting, high detail.`;
+        const backgroundPrompt = `Scenic atmospheric landscape art for a TCG background, including an integrated decorative frame, no characters, no text, ${baseArtPrompt}`;
+        const illustrationPrompt = `Isolated TCG character art, full body, on a plain solid white background, NO shadows, NO environment, ${baseArtPrompt}`;
+        const boxFrontPrompt = `Product packaging art for the front of a 2D tuck box, including an integrated decorative frame with a title "${finalBoxName} and inside a theme:", ${baseArtPrompt}`;
+        const boxBackPrompt = `Back of product box, retail packaging, ${baseArtPrompt}`;
+        // --- THIS IS THE FIX: New, dedicated prompt for the side panel texture ---
+        const sidePanelPatternPrompt = `Seamless, intricate, decrative but less quantitative textures(shapes,lines) only with aspect ratios (1:4), thematic background pattern with lines and shapes based on the related content for ${boxName}, just to fit on box sides, must not have characters, must not have text`;
+        // const sidePanelPatternPrompt = `Seamless, intricate, decrative border frames with aspect ratios (1:4), thematic background pattern with lines and shapes based on the related content from ${boxName}, must not have characters, must not have text`;
 
-         // --- NEW: 3. Claim the associated RuleSet ---
-        if (box.ruleSetId) {
-            const ruleSetClaimResult = await RuleSet.findOneAndUpdate(
-                { _id: box.ruleSetId, isGuestRuleSet: true }, // Find the linked guest ruleset
-                { $set: { userId: userId, isGuestRuleSet: false } } // Claim it
-            );
-            if (ruleSetClaimResult) {
-                console.log(`Successfully claimed associated RuleSet ID: ${box.ruleSetId}`);
+        const [bgResult, backResult, mainIllustrationResult, boxFrontResult, boxBackResult, patternResult] = await Promise.all([
+            aiService.generateImageWithStabilityAI(backgroundPrompt, 'png', cardAspectRatio),
+            aiService.generateImageWithStabilityAI(`Card back design. ${aiService.CARD_BACK_DESIGN_PROMPT_ADDITION}`, 'png', cardAspectRatio),
+            includeCharacterArt ? aiService.generateImageWithStabilityAI(illustrationPrompt, 'png', '1:1') : Promise.resolve({ success: false }),
+            generateBoxDesign ? aiService.generateImageWithStabilityAI(boxFrontPrompt, 'png', '1:1') : Promise.resolve({ success: false }),
+            generateBoxDesign ? aiService.generateImageWithStabilityAI(boxBackPrompt, 'png', '1:1') : Promise.resolve({ success: false }),
+            generateBoxDesign ? aiService.generateImageWithStabilityAI(sidePanelPatternPrompt, 'png', '9:21') : Promise.resolve({ success: false })
+        ]);
+
+        // --- PHASE 3: DATABASE ASSEMBLY ---
+        const boxWidthPx = Math.round(defaultCardWidthPx * 1.05);
+        const boxHeightPx = Math.round(defaultCardHeightPx * 1.05);
+        const newBoxData = { name: finalBoxName, description: finalBoxDescription, userId, isGuestBox: isGuest, defaultCardWidthPx, defaultCardHeightPx, boxWidthPx, boxHeightPx, ruleSetId: ruleSetId || null, game_rules, baseAISettings: { userPrompt, genre, cardColorTheme, fontFamily: selectedFontFamily } };
+        const savedBox = await new Box(newBoxData).save();
+        const savedTemplate = await new CardTemplate({ boxId: savedBox._id }).save();
+        savedBox.cardTemplateId = savedTemplate._id;
+        await savedBox.save();
+
+        const masterFrontElementsData = [];
+        if (bgResult.success) masterFrontElementsData.push({ type: 'image', imageUrl: bgResult.data, zIndex: 0, x: 0, y: 0, width: defaultCardWidthPx, height: defaultCardHeightPx }); else generationWarnings.push(bgResult.error);
+        if (mainIllustrationResult.success) {
+            const refinedUri = await aiService.removeBackgroundWithPixian(Buffer.from(mainIllustrationResult.data.split(',')[1], 'base64'));
+            const charSize = defaultCardWidthPx * 0.9;
+            masterFrontElementsData.push({ type: 'image', imageUrl: refinedUri || mainIllustrationResult.data, zIndex: 2, x: (defaultCardWidthPx - charSize) / 2, y: (defaultCardHeightPx - charSize) / 2, width: charSize, height: charSize });
+        } else if (includeCharacterArt) { generationWarnings.push(mainIllustrationResult.error); }
+        const titleColor = getContrastingTextColor(cardColorTheme);
+        masterFrontElementsData.push({ type: 'text', content: finalBoxName, zIndex: 4, x: 0, y: 20, width: defaultCardWidthPx, height: 40, color: titleColor, fontFamily: selectedFontFamily, textAlign: 'center', fontSize: "28px", fontWeight: 'bold' });
+
+        const masterBackElementsData = [];
+        if (backResult.success) masterBackElementsData.push({ type: 'image', imageUrl: backResult.data, zIndex: 0, x: 0, y: 0, width: defaultCardWidthPx, height: defaultCardHeightPx, isFrontElement: false }); else generationWarnings.push(backResult.error);
+
+        const frontTemplateElements = await Element.insertMany(masterFrontElementsData.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId, isFrontElement: true })));
+        const backTemplateElements = await Element.insertMany(masterBackElementsData.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId })));
+        savedTemplate.frontElements = frontTemplateElements.map(e => e._id);
+        savedTemplate.backElements = backTemplateElements.map(e => e._id);
+        await savedTemplate.save();
+
+        const savedCardsForResponse = [];
+        for (let i = 0; i < numCardsInDeck; i++) {
+            const textBgShape = await new Element({ type: 'shape', shapeType: 'rectangle', zIndex: 3, x: 40, y: 275, width: defaultCardWidthPx - 80, height: 120, fillColor: 'rgba(0, 0, 0, 0.5)', borderRadius: 15, boxId: savedBox._id, isGuestElement: isGuest, userId }).save();
+            const textElement = await new Element({ type: 'text', content: textItemsArray[i], zIndex: 5, x: 50, y: 280, width: defaultCardWidthPx - 100, height: 120, color: '#FFFFFF', fontFamily: "'Roboto', sans-serif", textAlign: 'center', fontSize: "18px", boxId: savedBox._id, isGuestElement: isGuest, userId }).save();
+            const savedCard = await new Card({ name: `${finalBoxName} - Card ${i + 1}`, boxId: savedBox._id, userId, isGuestCard: isGuest, orderInBox: i, widthPx: defaultCardWidthPx, heightPx: defaultCardHeightPx, isCustomDesign: false, elements: [textBgShape._id, textElement._id] }).save();
+            const cardObject = await Card.findById(savedCard._id).populate('elements').lean();
+            savedCardsForResponse.push(cardObject);
+        }
+
+        if (generateBoxDesign) {
+            const boxFront = [], boxBack = [], boxTop = [], boxBottom = [], boxLeft = [], boxRight = [];
+            if (boxFrontResult.success) boxFront.push({ type: 'image', imageUrl: boxFrontResult.data, zIndex: 0, x: 0, y: 0, width: boxWidthPx, height: boxHeightPx }); else generationWarnings.push(boxFrontResult.error);
+            if (boxBackResult.success) boxBack.push({ type: 'image', imageUrl: boxBackResult.data, zIndex: 0, x: 0, y: 0, width: boxWidthPx, height: boxHeightPx }); else generationWarnings.push(boxBackResult.error);
+
+            // --- THIS IS THE FIX: Use the single pattern image for all side panels ---
+            if (patternResult.success) {
+                const sidePanelElement = { type: 'image', imageUrl: patternResult.data, zIndex: 0, x: 0, y: 0, width: 100, height: boxHeightPx };
+                boxTop.push(sidePanelElement);
+                boxBottom.push(sidePanelElement);
+                boxLeft.push(sidePanelElement);
+                boxRight.push(sidePanelElement);
             } else {
-                console.log(`Note: RuleSet ID ${box.ruleSetId} was already claimed or does not exist.`);
+                generationWarnings.push(patternResult.error);
             }
-        }
-        
-        // Refetch data to return fully populated and updated structures
-        const updatedBox = await Box.findById(boxId).populate('boxFrontElementIds').populate('boxBackElementIds').lean();
-        const updatedCards = await Card.find({ boxId: boxId }).populate('cardFrontElementIds').populate('cardBackElementIds').lean();
-        
-        const populatedCards = updatedCards.map(card => ({
-            ...card,
-            cardFrontElements: card.cardFrontElementIds || [],
-            cardBackElements: card.cardBackElementIds || [],
-            cardFrontElementIds: (card.cardFrontElementIds || []).map(el => el._id),
-            cardBackElementIds: (card.cardBackElementIds || []).map(el => el._id)
-        }));
-        const populatedBox = {
-            ...updatedBox,
-            boxFrontElements: updatedBox.boxFrontElementIds || [],
-            boxBackElements: updatedBox.boxBackElementIds || [],
-            boxFrontElementIds: (updatedBox.boxFrontElementIds || []).map(el => el._id),
-            boxBackElementIds: (updatedBox.boxBackElementIds || []).map(el => el._id)
-        };
 
-        successResponse(res, 'Box, cards, and elements successfully claimed.', { box: populatedBox, cards: populatedCards });
+            const [fe, be, te, boe, le, re] = await Promise.all([
+                Element.insertMany(boxFront.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId, isFrontElement: true }))),
+                Element.insertMany(boxBack.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId, isFrontElement: false }))),
+                Element.insertMany(boxTop.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId }))),
+                Element.insertMany(boxBottom.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId }))),
+                Element.insertMany(boxLeft.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId }))),
+                Element.insertMany(boxRight.map(el => ({ ...el, boxId: savedBox._id, isGuestElement: isGuest, userId })))
+            ]);
+
+            savedBox.boxDesign = {
+                frontElements: fe.map(e => e._id), backElements: be.map(e => e._id),
+                topElements: te.map(e => e._id), bottomElements: boe.map(e => e._id),
+                leftElements: le.map(e => e._id), rightElements: re.map(e => e._id)
+            };
+            savedBox.boxFrontElementIds = fe.map(e => e._id);
+            savedBox.boxBackElementIds = be.map(e => e._id);
+            await savedBox.save();
+        }
+
+        const finalBox = await Box.findById(savedBox._id).populate(populateBoxPaths).lean();
+        const finalCardTemplate = await CardTemplate.findById(savedTemplate._id).populate('frontElements').populate('backElements').lean();
+
+        const finalResponseData = { box: normalizeBox(finalBox), cardTemplate: finalCardTemplate, cards: savedCardsForResponse };
+        const metadata = generationWarnings.length > 0 ? { warnings: [...new Set(generationWarnings)] } : null;
+        successResponse(res, `Box "${finalBoxName}" and ${numCardsInDeck} cards created successfully.`, finalResponseData, 201, metadata);
+
     } catch (error) {
-        errorResponse(res, 'Server error while claiming box.', 500, "CLAIM_BOX_FAILED", error.message);
+        console.error("Error in generateNewDeckAndBox Controller:", error);
+        errorResponse(res, "Error generating new deck and box.", 500, "DECK_GENERATION_FAILED", error.message);
     }
 };
 
-
-exports.createBox = async (req, res) => {
+exports.getBoxById = async (req, res) => {
     try {
-        const { name, description, defaultCardWidthPx, defaultCardHeightPx } = req.body;
-        let userId = null;
-        let isGuest = true;
-        if (req.user && req.user.id) { userId = req.user.id; isGuest = false; }
+        const { boxId } = req.params;
+        const userId = req.user ? req.user.id : null;
+        const query = userId ? { _id: boxId, $or: [{ userId: userId }, { isGuestBox: true }] } : { _id: boxId, isGuestBox: true };
+        const box = await Box.findOne(query).populate(populateBoxPaths).lean();
+        if (!box) return errorResponse(res, "Box not found or not authorized.", 404);
 
-        if (!name) return errorResponse(res, "Box name is required.", 400);
+        const cardTemplate = await CardTemplate.findById(box.cardTemplateId).populate('frontElements backElements').lean();
+        const cards = await Card.find({ boxId: box._id }).populate('elements').sort({ orderInBox: 1 }).lean();
 
-        const newBox = new Box({
-            name, description, userId, isGuestBox: isGuest,
-            defaultCardWidthPx, defaultCardHeightPx
-        });
-        const savedBox = await newBox.save();
-        successResponse(res, "Box created successfully.", savedBox, 201);
+        successResponse(res, "Box details retrieved successfully.", { box: normalizeBox(box), cardTemplate, cards });
     } catch (error) {
-        errorResponse(res, "Failed to create box.", 500, "BOX_CREATION_FAILED", error.message);
+        errorResponse(res, "Error fetching box details.", 500, "FETCH_BOX_FAILED", error.message);
     }
 };
 
@@ -544,22 +849,147 @@ exports.getUserBoxes = async (req, res) => {
         if (!req.user || !req.user.id) return errorResponse(res, "User not authenticated.", 401);
         const userId = req.user.id;
 
-        const boxesFromDB = await Box.find({ userId }) // Only user's boxes
-            .populate('boxFrontElementIds')
-            .populate('boxBackElementIds')
-            .sort({ updatedAt: -1 })
-            .lean();
+        const boxesFromDB = await Box.find({ userId: userId }).populate(populateBoxPaths).sort({ updatedAt: -1 }).lean();
+        if (!boxesFromDB || boxesFromDB.length === 0) return successResponse(res, "User has no boxes.", []);
 
-        const boxesForResponse = boxesFromDB.map(box => ({
-            ...box,
-            boxFrontElements: box.boxFrontElementIds || [],
-            boxBackElements: box.boxBackElementIds || [],
-            boxFrontElementIds: (box.boxFrontElementIds || []).map(el => el._id),
-            boxBackElementIds: (box.boxBackElementIds || []).map(el => el._id),
-        }));
-        successResponse(res, "User boxes retrieved successfully.", boxesForResponse);
+        const boxIds = boxesFromDB.map(box => box._id);
+        const templateIds = boxesFromDB.map(box => box.cardTemplateId);
+
+        const [allTemplates, allCards] = await Promise.all([
+            CardTemplate.find({ _id: { $in: templateIds } }).populate('frontElements backElements').lean(),
+            Card.find({ boxId: { $in: boxIds } }).populate('elements').sort({ orderInBox: 1 }).lean()
+        ]);
+
+        const fullBoxData = boxesFromDB.map(box => {
+            const cardTemplate = allTemplates.find(t => t._id.toString() === box.cardTemplateId.toString());
+            const cards = allCards.filter(c => c.boxId.toString() === box._id.toString());
+            return { box: normalizeBox(box), cardTemplate, cards };
+        });
+
+        successResponse(res, "User boxes retrieved successfully.", fullBoxData);
     } catch (error) {
         errorResponse(res, "Failed to retrieve user boxes.", 500, "FETCH_BOXES_FAILED", error.message);
+    }
+};
+
+exports.getPublicBox = async (req, res) => {
+    try {
+        const { boxId } = req.params;
+        const box = await Box.findOne({ _id: boxId, isPublic: true }).populate(populateBoxPaths).lean();
+        if (!box) return errorResponse(res, "This box is not public or does not exist.", 404);
+        const cardTemplate = await CardTemplate.findById(box.cardTemplateId).populate('frontElements backElements').lean();
+        const cards = await Card.find({ boxId: box._id }).populate('elements').sort({ orderInBox: 1 }).lean();
+        successResponse(res, "Public box data retrieved successfully.", { box: normalizeBox(box), cardTemplate, cards });
+    } catch (error) {
+        errorResponse(res, "Failed to retrieve public box data.", 500, "GET_PUBLIC_BOX_FAILED", error.message);
+    }
+};
+
+exports.claimBox = async (req, res) => {
+    try {
+        const { boxId } = req.params;
+        const userId = req.user.id;
+        const box = await Box.findById(boxId);
+        if (!box) return errorResponse(res, 'Box not found.', 404);
+        if (box.userId && box.userId.toString() !== userId.toString()) return errorResponse(res, 'This box is already owned by another user.', 403);
+
+        if (box.userId && !box.isGuestBox) {
+            const alreadyOwnedBox = await Box.findById(boxId).populate(populateBoxPaths).lean();
+            const cardTemplate = await CardTemplate.findById(alreadyOwnedBox.cardTemplateId).populate('frontElements backElements').lean();
+            const cards = await Card.find({ boxId: boxId }).populate('elements').sort({ orderInBox: 1 }).lean();
+            return successResponse(res, 'Box already associated with your account.', { box: normalizeBox(alreadyOwnedBox), cardTemplate, cards });
+        }
+
+        box.userId = userId; box.isGuestBox = false;
+        await box.save();
+        await Card.updateMany({ boxId: box._id, isGuestCard: true }, { $set: { userId: userId, isGuestCard: false } });
+        await Element.updateMany({ boxId: box._id, isGuestElement: true }, { $set: { userId: userId, isGuestElement: false } });
+        await CardTemplate.updateMany({ boxId: box._id }, { $set: { userId: userId } });
+
+        const updatedBox = await Box.findById(boxId).populate(populateBoxPaths).lean();
+        const cardTemplate = await CardTemplate.findById(updatedBox.cardTemplateId).populate('frontElements backElements').lean();
+        const cards = await Card.find({ boxId: boxId }).populate('elements').sort({ orderInBox: 1 }).lean();
+        successResponse(res, 'Box, cards, and elements successfully claimed.', { box: normalizeBox(updatedBox), cardTemplate, cards });
+    } catch (error) {
+        errorResponse(res, 'Server error while claiming box.', 500, "CLAIM_BOX_FAILED", error.message);
+    }
+};
+
+// --- NEW METHOD for detaching a card to give it a custom design ---
+exports.detachCardFromTemplate = async (req, res) => {
+    try {
+        const { cardId } = req.params;
+        const { frontElements, backElements } = req.body; // Expects full element objects
+        const userId = req.user.id;
+
+        const card = await Card.findOne({ _id: cardId, userId });
+        if (!card) return errorResponse(res, "Card not found or not authorized.", 404);
+
+        // Delete old unique elements if they exist
+        if (card.uniqueElements && card.uniqueElements.length > 0) {
+            await Element.deleteMany({ _id: { $in: card.uniqueElements } });
+        }
+
+        // Create new elements for the custom design
+        const newFrontElements = await Element.insertMany(frontElements.map(el => ({ ...el, userId, isGuestElement: false })));
+        const newBackElements = await Element.insertMany(backElements.map(el => ({ ...el, userId, isGuestElement: false })));
+
+        // Update the card to use the new custom design
+        card.customDesign = {
+            frontElements: newFrontElements.map(e => e._id),
+            backElements: newBackElements.map(e => e._id),
+        };
+        card.uniqueElements = []; // Clear unique elements as it's now fully custom
+        await card.save();
+
+        successResponse(res, "Card has been given a custom design.", { card });
+    } catch (error) {
+        errorResponse(res, "Failed to detach card from template.", 500, "DETACH_CARD_FAILED", error.message);
+    }
+};
+
+// --- REFACTORED: promoteCardToTemplate to use the new, simplified Card model ---
+exports.promoteCardToTemplate = async (req, res) => {
+    try {
+        const { cardId } = req.params;
+        const userId = req.user.id;
+
+        const card = await Card.findOne({ _id: cardId, userId });
+        if (!card || !card.isCustomDesign) {
+            return errorResponse(res, "Card not found, not authorized, or does not have a custom design.", 404);
+        }
+
+        const box = await Box.findById(card.boxId);
+        const template = await CardTemplate.findById(box.cardTemplateId);
+
+        // Delete old template elements to prevent orphans
+        await Element.deleteMany({ _id: { $in: [...template.frontElements, ...template.backElements] } });
+
+        // Get the full element documents from the custom card
+        const customElements = await Element.find({ _id: { $in: card.elements } });
+
+        // Separate them into front and back for the new template
+        const newFrontElements = customElements.filter(el => el.isFrontElement);
+        const newBackElements = customElements.filter(el => !el.isFrontElement);
+
+        template.frontElements = newFrontElements.map(e => e._id);
+        template.backElements = newBackElements.map(e => e._id);
+        await template.save();
+
+        // Find the unique text and shape elements from the new design to re-attach to the card
+        const uniqueElementsForCard = customElements.filter(el => el.zIndex === 3 || el.zIndex === 5);
+
+        // Re-attach the source card to the template
+        card.isCustomDesign = false;
+        card.elements = uniqueElementsForCard.map(e => e._id);
+        await card.save();
+
+        // Optionally, reset all other custom cards in the deck to use the new template
+        // await Card.updateMany({ boxId: box._id, _id: { $ne: cardId }, isCustomDesign: true }, { $set: { isCustomDesign: false, elements: [ ... ] }});
+
+        successResponse(res, "Card design has been promoted to the master template for this deck.");
+    } catch (error) {
+        errorResponse(res, "Failed to promote card design.", 500, "PROMOTE_CARD_FAILED", error.message);
     }
 };
 
@@ -633,137 +1063,33 @@ exports.exportBoxAsJson = async (req, res) => {
     }
 };
 
-exports.getBoxById = async (req, res) => {
-    console.log(`BOX_CONTROLLER: getBoxById called for boxId: ${req.params.boxId}`);
+exports.createBox = async (req, res) => {
     try {
-        const { boxId } = req.params;
-        let currentUserId = null; // Assume guest initially
-        let isAuthenticated = false;
+        const { name, description, defaultCardWidthPx = 315, defaultCardHeightPx = 440 } = req.body;
+        let userId = null; let isGuest = true;
+        if (req.user && req.user.id) { userId = req.user.id; isGuest = false; }
+        if (!name) return errorResponse(res, "Box name is required.", 400);
 
-        // Optional token check to determine if a user is logged in
-        let token;
-        if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-            token = req.headers.authorization.split(' ')[1];
-            try {
-                const jwt = require('jsonwebtoken'); // require if not at top
-                const User = require('../models/User.model'); // require if not at top
-
-                const decoded = jwt.verify(token, process.env.JWT_SECRET);
-                const user = await User.findById(decoded.id).lean();
-                if (user) {
-                    currentUserId = user._id.toString();
-                    isAuthenticated = true;
-                }
-            } catch (err) {
-                // Token invalid or expired, proceed as guest for public access
-                console.log('Optional token check failed for getBoxById, proceeding as guest-can-view:', err.message);
-            }
-        }
-
-        if (!mongoose.Types.ObjectId.isValid(boxId)) {
-            return errorResponse(res, "Invalid Box ID format.", 400, "INVALID_ID");
-        }
-
-        const boxFromDB = await Box.findById(boxId)
-            .populate('boxFrontElementIds')
-            .populate('boxBackElementIds')
-            .lean();
-
-        if (!boxFromDB) {
-            return errorResponse(res, "Box not found.", 404, "NOT_FOUND");
-        }
-
-        // Authorization Logic:
-        if (!boxFromDB.isGuestBox) { // If the box is NOT a guest box (i.e., it has an owner or should have one)
-            if (!isAuthenticated) {
-                return errorResponse(res, "Not authorized to view this box (login required).", 401, "AUTH_REQUIRED");
-            }
-            if (boxFromDB.userId && boxFromDB.userId.toString() !== currentUserId) {
-                return errorResponse(res, "Not authorized to view this box (ownership mismatch).", 403, "UNAUTHORIZED_ACCESS");
-            }
-            // If boxFromDB.userId is null but isGuestBox is false, it implies an inconsistent state,
-            // but for safety, if authenticated and userId doesn't match, deny.
-        }
-        // If it's a guest box (boxFromDB.isGuestBox is true), anyone can view it.
-        // If the user is authenticated and it's a guest box, they can still view it.
-
-        console.log(`BOX_CONTROLLER: Found box ${boxId}. Populating its cards and their elements...`);
-
-        const cardQuery = { boxId: boxFromDB._id };
-        // If the box is owned, only show cards owned by that user (or guest cards if box was just claimed)
-        // If the box is guest, only show guest cards
-        if (boxFromDB.userId) {
-            cardQuery.userId = boxFromDB.userId;
-        } else {
-            cardQuery.isGuestCard = true;
-        }
-
-        const cardsFromDB = await Card.find(cardQuery)
-            .populate('cardFrontElementIds')
-            .populate('cardBackElementIds')
-            .sort({ orderInBox: 1 })
-            .lean();
-        
-        const cardsForResponse = cardsFromDB.map(card => {
-            const responseCard = { ...card };
-            responseCard.cardFrontElements = card.cardFrontElementIds || [];
-            responseCard.cardBackElements = card.cardBackElementIds || [];
-            responseCard.cardFrontElementIds = (card.cardFrontElementIds || []).map(element => element._id);
-            responseCard.cardBackElementIds = (card.cardBackElementIds || []).map(element => element._id);
-            return responseCard;
-        });
-
-        const boxResponseObject = { ...boxFromDB };
-        boxResponseObject.boxFrontElements = boxFromDB.boxFrontElementIds || [];
-        boxResponseObject.boxBackElements = boxFromDB.boxBackElementIds || [];
-        boxResponseObject.boxFrontElementIds = (boxFromDB.boxFrontElementIds || []).map(element => element._id);
-        boxResponseObject.boxBackElementIds = (boxFromDB.boxBackElementIds || []).map(element => element._id);
-        boxResponseObject.cards = cardsForResponse;
-
-        successResponse(res, "Box details retrieved successfully.", boxResponseObject);
-
+        const boxWidthPx = Math.round(defaultCardWidthPx * 1.05);
+        const boxHeightPx = Math.round(defaultCardHeightPx * 1.05);
+        const newBox = new Box({ name, description, userId, isGuestBox: isGuest, defaultCardWidthPx, defaultCardHeightPx, boxWidthPx, boxHeightPx });
+        const savedBox = await newBox.save();
+        successResponse(res, "Box created successfully.", savedBox, 201);
     } catch (error) {
-        console.error("Error in getBoxById Controller:", error.message, error.stack);
-        errorResponse(res, "Error fetching box details.", 500, "FETCH_BOX_FAILED", error.message);
+        errorResponse(res, "Failed to create box.", 500, "BOX_CREATION_FAILED", error.message);
     }
 };
 
 exports.updateBox = async (req, res) => {
     try {
         const { boxId } = req.params;
-        const updates = req.body; // name, description, defaults, baseAISettings
-        let userId = null;
-        if (req.user && req.user.id) userId = req.user.id;
-
-        if (!mongoose.Types.ObjectId.isValid(boxId)) {
-            return errorResponse(res, "Invalid Box ID format.", 400);
-        }
-        if (Object.keys(updates).length === 0) {
-            return errorResponse(res, "No update fields provided.", 400);
-        }
-        // Sanitize updates - prevent changing userId or isGuestBox directly here
+        const updates = req.body;
+        const userId = req.user ? req.user.id : null;
+        const query = userId ? { _id: boxId, userId: userId } : { _id: boxId, isGuestBox: true };
         delete updates.userId; delete updates.isGuestBox;
-        delete updates.cards; // Cards are managed separately
-
-        updates.updatedAt = Date.now();
-
-        const boxQuery = { _id: boxId };
-        if (userId) boxQuery.userId = userId; else boxQuery.isGuestBox = true;
-
-        const updatedBox = await Box.findOneAndUpdate(boxQuery, { $set: updates }, { new: true, runValidators: true })
-            .populate('boxFrontElementIds').populate('boxBackElementIds').lean();
-
-        if (!updatedBox) {
-            return errorResponse(res, "Box not found or not authorized to update.", 404);
-        }
-        
-        const boxResponseObject = {...updatedBox};
-        boxResponseObject.boxFrontElements = updatedBox.boxFrontElementIds || [];
-        boxResponseObject.boxBackElements = updatedBox.boxBackElementIds || [];
-        boxResponseObject.boxFrontElementIds = (updatedBox.boxFrontElementIds || []).map(el => el._id);
-        boxResponseObject.boxBackElementIds = (updatedBox.boxBackElementIds || []).map(el => el._id);
-
-        successResponse(res, "Box updated successfully.", boxResponseObject);
+        const updatedBox = await Box.findOneAndUpdate(query, { $set: updates }, { new: true, runValidators: true }).populate(populateBoxPaths).lean();
+        if (!updatedBox) return errorResponse(res, "Box not found or not authorized to update.", 404);
+        successResponse(res, "Box updated successfully.", normalizeBox(updatedBox));
     } catch (error) {
         errorResponse(res, "Error updating box.", 500, "BOX_UPDATE_FAILED", error.message);
     }
@@ -772,108 +1098,36 @@ exports.updateBox = async (req, res) => {
 exports.deleteBox = async (req, res) => {
     try {
         const { boxId } = req.params;
-        let userId = null;
-        if (req.user && req.user.id) userId = req.user.id;
-
-        if (!mongoose.Types.ObjectId.isValid(boxId)) {
-            return errorResponse(res, "Invalid Box ID format.", 400);
-        }
-
-        const boxQuery = { _id: boxId };
-        if (userId) boxQuery.userId = userId; else boxQuery.isGuestBox = true;
-
-        const boxToDelete = await Box.findOne(boxQuery);
+        const userId = req.user ? req.user.id : null;
+        const query = userId ? { _id: boxId, userId: userId } : { _id: boxId, isGuestBox: true };
+        const boxToDelete = await Box.findOne(query);
         if (!boxToDelete) return errorResponse(res, "Box not found or not authorized.", 404);
 
-        // 1. Find all cards in the box
-        const cardsInBox = await Card.find({ boxId: boxToDelete._id });
-        const cardIdsInBox = cardsInBox.map(c => c._id);
-
-        // 2. Collect all element IDs from cards in the box and from the box itself
-        let allElementIdsToDelete = [
-            ...(boxToDelete.boxFrontElementIds || []),
-            ...(boxToDelete.boxBackElementIds || [])
-        ];
-        cardsInBox.forEach(card => {
-            allElementIdsToDelete.push(...(card.cardFrontElementIds || []));
-            allElementIdsToDelete.push(...(card.cardBackElementIds || []));
-        });
-        allElementIdsToDelete = [...new Set(allElementIdsToDelete.map(id => id.toString()))]; // Unique IDs
-
-        // 3. Delete all collected elements
-        if (allElementIdsToDelete.length > 0) {
-            const elementQueryDel = { _id: { $in: allElementIdsToDelete } };
-            if (userId) elementQueryDel.userId = userId; else elementQueryDel.isGuestElement = true;
-            await Element.deleteMany(elementQueryDel);
-        }
-
-        // 4. Delete all cards in the box
-        if (cardIdsInBox.length > 0) {
-            const cardQueryDel = { _id: { $in: cardIdsInBox } };
-            if (userId) cardQueryDel.userId = userId; else cardQueryDel.isGuestCard = true;
-            await Card.deleteMany(cardQueryDel);
-        }
-
-        // 5. Delete the box itself
+        await Card.deleteMany({ boxId: boxToDelete._id });
+        await Element.deleteMany({ boxId: boxToDelete._id });
+        await CardTemplate.findOneAndDelete({ boxId: boxToDelete._id });
         await Box.findByIdAndDelete(boxId);
-
-        successResponse(res, "Box, associated cards, and elements deleted successfully.", { boxId });
+        successResponse(res, "Box and all its contents deleted successfully.", { boxId });
     } catch (error) {
-        errorResponse(res, "Error deleting box and its contents.", 500, "BOX_DELETE_CASCADE_FAILED", error.message);
+        errorResponse(res, "Error deleting box.", 500, "BOX_DELETE_FAILED", error.message);
     }
 };
-// TODO: addBoxElement, updateBoxElement, deleteBoxElement (for box art)
-// These would modify box.boxFrontElements or box.boxBackElements
-// Similar to how card elements are managed, but on the Box model.
-// Helper function to get the correct element array path for Box elements
-const getBoxElementArrayPath = (face) => {
-    return face === 'back' ? 'boxBackElementIds' : 'boxFrontElementIds';
-};
 
-// --- Box Element Management ---
 exports.addBoxElement = async (req, res) => {
     try {
         const { boxId } = req.params;
-        const { isFrontElement, type, ...elementProps } = req.body;
-        let userId = null;
-        let isGuest = true;
-        if (req.user && req.user.id) { userId = req.user.id; }
-
-        if (!mongoose.Types.ObjectId.isValid(boxId)) return errorResponse(res, 'Invalid Box ID.', 400);
-        if (typeof isFrontElement !== 'boolean') return errorResponse(res, "isFrontElement (true/false) is required.", 400);
-        if (!type || !['text', 'image', 'shape'].includes(type)) return errorResponse(res, 'Invalid element type.', 400);
-
-        const boxQuery = { _id: boxId };
-        if (userId) boxQuery.userId = userId; else boxQuery.isGuestBox = true;
-        const box = await Box.findOne(boxQuery);
+        const { face, ...elementProps } = req.body; // Expect 'face' like 'front', 'top', etc.
+        const userId = req.user ? req.user.id : null;
+        const query = userId ? { _id: boxId, userId: userId } : { _id: boxId, isGuestBox: true };
+        const box = await Box.findOne(query);
         if (!box) return errorResponse(res, "Box not found or not authorized.", 404);
 
-        if (box.userId) isGuest = false; // If box is owned, element is not guest
+        const isGuest = !box.userId;
+        const newElement = await new Element({ ...elementProps, boxId: box._id, cardId: null, userId: box.userId, isGuestElement: isGuest }).save();
 
-        const newElement = new Element({
-            ...elementProps, type,
-            boxId: box._id,
-            cardId: null, // Explicitly null for box elements
-            userId: box.userId, // Inherit userId from box (can be null for guest box)
-            isGuestElement: box.isGuestBox, // Match box's guest status
-            isFrontElement
-        });
-        const savedElement = await newElement.save();
-
-        const arrayPath = getBoxElementArrayPath(isFrontElement);
-        await Box.findByIdAndUpdate(boxId, { $push: { [arrayPath]: savedElement._id } });
-        
-        const updatedBox = await Box.findById(boxId)
-            .populate('boxFrontElementIds').populate('boxBackElementIds').lean();
-        
-        const boxForResponse = {
-            ...updatedBox,
-            boxFrontElements: updatedBox.boxFrontElementIds || [],
-            boxBackElements: updatedBox.boxBackElementIds || [],
-            boxFrontElementIds: (updatedBox.boxFrontElementIds || []).map(el => el._id),
-            boxBackElementIds: (updatedBox.boxBackElementIds || []).map(el => el._id),
-        };
-        successResponse(res, "Element added to box.", boxForResponse, 201);
+        const arrayPath = `boxDesign.${face}Elements`;
+        await Box.findByIdAndUpdate(boxId, { $push: { [arrayPath]: newElement._id } });
+        successResponse(res, `Element added to box ${face}.`, { element: newElement }, 201);
     } catch (error) {
         errorResponse(res, "Failed to add element to box.", 500, "ADD_BOX_ELEMENT_FAILED", error.message);
     }
@@ -881,34 +1135,14 @@ exports.addBoxElement = async (req, res) => {
 
 exports.updateBoxElement = async (req, res) => {
     try {
-        const { elementId } = req.params; // Element's _id
+        const { elementId } = req.params;
         const updates = req.body;
-        let userId = null;
-        if (req.user && req.user.id) userId = req.user.id;
-
-        if (!mongoose.Types.ObjectId.isValid(elementId)) return errorResponse(res, "Invalid Element ID.", 400);
-        if (Object.keys(updates).length === 0) return errorResponse(res, "No updates provided.", 400);
-        
-        delete updates.cardId; delete updates.boxId; delete updates.userId;
-        delete updates.isFrontElement; delete updates.isGuestElement;
-
-        const elementQuery = { _id: elementId, cardId: null }; // Ensure it's a box element
-        if (userId) elementQuery.userId = userId; else elementQuery.isGuestElement = true;
-        
-        const updatedElement = await Element.findOneAndUpdate(elementQuery, { $set: updates }, { new: true });
+        const userId = req.user ? req.user.id : null;
+        const query = userId ? { _id: elementId, userId: userId } : { _id: elementId, isGuestElement: true };
+        delete updates._id; delete updates.boxId; delete updates.cardId;
+        const updatedElement = await Element.findOneAndUpdate(query, { $set: updates }, { new: true });
         if (!updatedElement) return errorResponse(res, "Box element not found or not authorized.", 404);
-        
-        const parentBox = await Box.findById(updatedElement.boxId)
-            .populate('boxFrontElementIds').populate('boxBackElementIds').lean();
-        
-        const boxForResponse = {
-            ...parentBox,
-            boxFrontElements: parentBox.boxFrontElementIds || [],
-            boxBackElements: parentBox.boxBackElementIds || [],
-            boxFrontElementIds: (parentBox.boxFrontElementIds || []).map(el => el._id),
-            boxBackElementIds: (parentBox.boxBackElementIds || []).map(el => el._id),
-        };
-        successResponse(res, "Box element updated.", boxForResponse);
+        successResponse(res, "Box element updated successfully.", { element: updatedElement });
     } catch (error) {
         errorResponse(res, "Failed to update box element.", 500, "UPDATE_BOX_ELEMENT_FAILED", error.message);
     }
@@ -916,37 +1150,38 @@ exports.updateBoxElement = async (req, res) => {
 
 exports.deleteBoxElement = async (req, res) => {
     try {
-        const { elementId } = req.params; // Element's _id
-        let userId = null;
-        if (req.user && req.user.id) userId = req.user.id;
-
-        if (!mongoose.Types.ObjectId.isValid(elementId)) return errorResponse(res, "Invalid Element ID.", 400);
-
-        const elementQuery = { _id: elementId, cardId: null }; // Box element
-        if (userId) elementQuery.userId = userId; else elementQuery.isGuestElement = true;
-
-        const elementToDelete = await Element.findOne(elementQuery);
+        const { elementId } = req.params;
+        const userId = req.user ? req.user.id : null;
+        const query = userId ? { _id: elementId, userId: userId } : { _id: elementId, isGuestElement: true };
+        const elementToDelete = await Element.findOne(query);
         if (!elementToDelete) return errorResponse(res, "Box element not found or not authorized.", 404);
 
         const boxId = elementToDelete.boxId;
-        const arrayPath = getBoxElementArrayPath(elementToDelete.isFrontElement);
-
+        // This is complex, we need to find which array it's in. A simpler way is to just delete the element.
+        // The frontend will need to refetch the box to see the change.
         await Element.findByIdAndDelete(elementId);
-        const updatedBox = await Box.findByIdAndUpdate(boxId, 
-            { $pull: { [arrayPath]: elementId }, $set: {updatedAt: Date.now()} }, 
-            { new: true }
-        ).populate('boxFrontElementIds').populate('boxBackElementIds').lean();
 
-        const responseBox = { ...updatedBox };
-        responseBox.boxFrontElements = updatedBox.boxFrontElementIds || [];
-        responseBox.boxBackElements = updatedBox.boxBackElementIds || [];
-        responseBox.boxFrontElementIds = (updatedBox.boxFrontElementIds || []).map(el => el._id);
-        responseBox.boxBackElementIds = (updatedBox.boxBackElementIds || []).map(el => el._id);
-        
-        successResponse(res, "Box element deleted.", responseBox);
+        // A more robust solution would pull from all possible arrays.
+        await Box.findByIdAndUpdate(boxId, {
+            $pull: {
+                'boxDesign.frontElements': elementId, 'boxDesign.backElements': elementId,
+                'boxDesign.topElements': elementId, 'boxDesign.bottomElements': elementId,
+                'boxDesign.leftElements': elementId, 'boxDesign.rightElements': elementId,
+            }
+        });
+
+        successResponse(res, "Box element deleted successfully.", { elementId });
     } catch (error) {
-        errorResponse(res, "Error deleting box element.", 500, error.message);
+        errorResponse(res, "Error deleting box element.", 500, "DELETE_BOX_ELEMENT_FAILED", error.message);
     }
+};
+
+// TODO: addBoxElement, updateBoxElement, deleteBoxElement (for box art)
+// These would modify box.boxFrontElements or box.boxBackElements
+// Similar to how card elements are managed, but on the Box model.
+// Helper function to get the correct element array path for Box elements
+const getBoxElementArrayPath = (face) => {
+    return face === 'back' ? 'boxBackElementIds' : 'boxFrontElementIds';
 };
 
 /**
@@ -990,44 +1225,5 @@ exports.togglePublicStatus = async (req, res) => {
 
     } catch (error) {
         errorResponse(res, "Failed to update public status.", 500, "TOGGLE_PUBLIC_FAILED", error.message);
-    }
-};
-
-/**
- * @desc    Get a single publicly shared box's details.
- * @route   GET /api/boxes/public/:boxId
- * @access  Public
- */
-exports.getPublicBox = async (req, res) => {
-    try {
-        const { boxId } = req.params;
-
-        // Find the box by its ID but ONLY if its 'isPublic' flag is set to true.
-        // This prevents private boxes from ever being fetched through this public endpoint.
-        const box = await Box.findOne({ _id: boxId, isPublic: true })
-            .populate('boxFrontElementIds')
-            .populate('boxBackElementIds')
-            .lean();
-
-        if (!box) {
-            return errorResponse(res, "This box is not public or does not exist.", 404);
-        }
-
-        // Also fetch the cards associated with this public box
-        const cards = await Card.find({ boxId: box._id })
-            .populate('cardFrontElementIds')
-            .populate('cardBackElementIds')
-            .sort({ orderInBox: 1 })
-            .lean();
-            
-        const responseData = {
-            box,
-            cards
-        };
-
-        successResponse(res, "Public box data retrieved successfully.", responseData);
-
-    } catch (error) {
-        errorResponse(res, "Failed to retrieve public box data.", 500, "GET_PUBLIC_BOX_FAILED", error.message);
     }
 };

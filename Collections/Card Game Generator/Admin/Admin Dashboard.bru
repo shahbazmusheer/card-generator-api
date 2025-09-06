@@ -1,0 +1,50 @@
+meta {
+  name: Admin Dashboard
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/admin/dashboard/overview
+  body: text
+  auth: bearer
+}
+
+headers {
+  Accept: application/json
+}
+
+auth:bearer {
+  token: {{adminAccessToken}}
+}
+
+body:text {
+  {
+      "items": [
+          {
+              "boxId": "687fe9915902a2e32e57b149",
+              "deckQuantity": 250,
+              "cardsPerDeck": 55,
+              "materialFinish": "Gloss Finish",
+              "cardStock": "Standard 300gsm Poker",
+              "boxType": "350gsm Tuck Box"
+          }
+      ],
+      "shippingDetails": {
+          "fullName": "John Doe",
+          "email": "john.doe@example.com",
+          "phone": "+15551234567",
+          "address": "123 Main St",
+          "city": "Beverly Hills",
+          "country": "United States",
+          "zipCode": "90210",
+          "countryCode": "US"
+      },
+      "paymentMethod": "Stripe",
+      "transactionId": "pi_3Lq2"
+  }
+}
+
+settings {
+  encodeUrl: true
+}

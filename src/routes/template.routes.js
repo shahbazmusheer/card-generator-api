@@ -1,29 +1,24 @@
-// src/routes/template.routes.js
 const express = require('express');
 const router = express.Router();
 const templateController = require('../controllers/template.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
 
-// For now, all routes are public as requested.
-// Later, you can add `authMiddleware.protect` and `authMiddleware.authorize('admin')` to these routes.
+// --- PUBLIC ROUTES ---
+// Get all available templates for the user to choose from.
+router.get('/', templateController.getAllTemplates);
 
-// Export/Import
-router.get('/export/json', templateController.exportTemplates);
-router.post('/import/json', templateController.importTemplates);
+// Get the details of a single, specific template.
+router.get('/:templateId', templateController.getTemplateById);
 
-router.route('/')
-    .get(templateController.getAllTemplates);
 
-router.route('/:templateId')
-    .get(templateController.getTemplateById);
+// --- ADMIN-ONLY ROUTES ---
+// All routes below require the user to be an authenticated admin.
+router.use(protect, authorize('admin'));
 
-    
-router.use(protect);
-router.use(authorize('admin'));
-// Standard CRUD
-router.route('/')
-    .post(templateController.createTemplate);
+// Admin creates a new template.
+router.post('/', templateController.createTemplate);
 
+// Admin updates or deletes an existing template.
 router.route('/:templateId')
     .put(templateController.updateTemplate)
     .delete(templateController.deleteTemplate);

@@ -1,0 +1,32 @@
+meta {
+  name: Create Box With Decks (Guest)
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/boxes/create-with-deck
+  body: json
+  auth: inherit
+}
+
+headers {
+  Accept: application/json
+}
+
+body:json {
+  {
+      "boxName":"Eternal Dragon",
+      "userPrompt": "A high-resolution, full-art portrait trading card featuring a majestic dragon with emerald scales and golden eyes breaking through a Magic: The Gathering–inspired borderless frame, set against ancient ruins beneath a starlit sky with floating crystals, with the card name 'Eternal Dragon' in a bold serif font on a curved 50% transparent banner at the top left, mana cost symbols at the top right, a bold type line 'Guardian of the Ancient Realm' and rules text in a wide rounded 50% transparent textbox in the lower third, and a power/toughness box at the bottom right, designed with layered 3D effects, crisp detail, and premium trading card style.",
+      "boxDescription": "A high-resolution, full-art portrait trading card (2.5:3.5 aspect ratio) featuring a majestic dragon with emerald scales and golden eyes breaking through a Magic: The Gathering–inspired borderless frame, set against ancient ruins beneath a starlit sky with floating crystals, with the card name 'Eternal Dragon' in a bold serif font on a curved 50% transparent banner at the top left, mana cost symbols at the top right, a bold type line 'Guardian of the Ancient Realm' and rules text in a wide rounded 50% transparent textbox in the lower third, and a power/toughness box at the bottom right, designed with layered 3D effects, crisp detail, and premium trading card style.",
+      "genre": "Mythology",
+      "numCardsInDeck": 3,
+      "generateBoxDesign": true,
+      "cardColorTheme": "#E74C3C",
+      "ruleSetId": "68b041cf3accdf22a46e963a"
+  }
+}
+
+settings {
+  encodeUrl: true
+}

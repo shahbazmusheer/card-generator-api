@@ -1,37 +1,30 @@
 const express = require('express');
 const router = express.Router();
 const boxController = require('../controllers/box.controller');
-const { protect } = require('../middleware/auth.middleware'); // Use the correct import name
+const { protect, optionalProtect } = require('../middleware/auth.middleware');
 
-// --- NEW PUBLIC ROUTE for viewing a shared box ---
-// This route MUST be defined before the other /:boxId routes to be matched correctly.
-// It has no 'protect' middleware, so anyone can call it.
-router.get('/view-box/:boxId', boxController.getPublicBox);
+// Apply optional authentication to all box routes first
+router.use(optionalProtect);
 
-// --- Box Creation (unchanged) ---
+// Publicly accessible routes
+router.get('/public/:boxId', boxController.getPublicBox);
 router.post('/create-with-deck', boxController.generateNewDeckAndBox);
+
+// Public-aware routes (work for guests or logged-in users)
 router.post('/', boxController.createBox);
-
-// --- Claiming a Box (unchanged, protected) ---
-router.post('/:boxId/claim', protect, boxController.claimBox);
-
-// --- Reading User's Boxes (unchanged, protected) ---
-router.get('/', protect, boxController.getUserBoxes);
-router.get('/:boxId/export/json', protect, boxController.exportBoxAsJson);
-
-// --- NEW PROTECTED ROUTE for toggling the public status ---
-// Only the authenticated owner can access this.
-router.put('/:boxId/toggle-public', protect, boxController.togglePublicStatus);
-
-// --- Modifying/Deleting Box (unchanged, protected) ---
-router.put('/:boxId', protect, boxController.updateBox);
-router.delete('/:boxId', protect, boxController.deleteBox);
-router.post('/:boxId/elements', protect, boxController.addBoxElement);
-router.put('/:boxId/elements/:elementId', protect, boxController.updateBoxElement);
-router.delete('/:boxId/elements/:elementId', protect, boxController.deleteBoxElement);
-
-// --- Reading a specific box (unchanged) ---
-// This is the route for when an owner views their own box. It can stay last.
+router.get('/', boxController.getUserBoxes);
 router.get('/:boxId', boxController.getBoxById);
+router.put('/:boxId', boxController.updateBox);
+router.delete('/:boxId', boxController.deleteBox);
+router.post('/:boxId/elements', boxController.addBoxElement);
+router.put('/:boxId/elements/:elementId', boxController.updateBoxElement);
+router.delete('/:boxId/elements/:elementId', boxController.deleteBoxElement);
+router.put('/cards/:cardId/detach', boxController.detachCardFromTemplate);
+
+// Protected routes (require a logged-in user)
+router.post('/:boxId/claim', protect, boxController.claimBox);
+router.get('/:boxId/export/json', protect, boxController.exportBoxAsJson);
+router.put('/:boxId/toggle-public', protect, boxController.togglePublicStatus);
+router.put('/cards/:cardId/promote', protect, boxController.promoteCardToTemplate);
 
 module.exports = router;
